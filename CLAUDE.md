@@ -4,7 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-Pre-implementation. The only artifact is `v0.1_specifications/llm-token-balancing-gateway-v0.1-implementation-handoff.pdf` (17 pages, dated 9 Aug 2026, "implementation-ready"). `README.md` is empty; there is no source tree, dependency manifest, lint/type/test tooling, or CI yet. Milestone M0 (below) is what establishes those, so the build/lint/test commands for this repo do not exist and should not be invented — add them here as M0 lands them.
+**M0 (skeleton) complete pending approval.** Package, config, CI, lint/type/test tooling, ASGI app, health endpoints, request-ID propagation. Nothing downstream of that exists yet: no persistence, routing, providers, validation, or generation endpoints.
+
+Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
+
+## Commands
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+python -m gateway            # serve on GATEWAY_HOST:GATEWAY_PORT (127.0.0.1:8000)
+
+pytest -q                    # full suite
+pytest tests/unit -q         # one layer
+pytest -k request_id         # one topic
+pytest tests/x.py::test_y    # one test
+ruff check . && ruff format --check .
+mypy                         # strict
+```
+
+### macOS pitfall: `pip install -e` can silently no-op
+
+Some setuptools versions set the macOS `UF_HIDDEN` flag on `__editable__*.pth`, and CPython ≥3.12 `site.addpackage` deliberately skips hidden `.pth` files. The install then reports success while `import gateway` fails.
+
+`pytest` masks this (its `pythonpath = ["src"]` bypasses the install), so the CI app-boot smoke test is the real guard. Diagnose and fix with:
+
+```bash
+stat -f '%N flags=[%Sf]' .venv/lib/python3.12/site-packages/__editable__*.pth
+chflags nohidden .venv/lib/python3.12/site-packages/__editable__*.pth
+```
+
+Upgrading setuptools resolved it here. Linux/CI is unaffected — `UF_HIDDEN` does not exist there.
 
 ## Reading the spec
 
@@ -82,6 +113,16 @@ tests/{unit,integration,contract,e2e,fixtures}/
 ```
 
 `ProviderAdapter` is the abstraction boundary. LiteLLM may normalize HTTP transport but **is not the router** — routing decisions stay in `services/router.py`.
+
+## Conventions established in M0
+
+Extend these rather than reinventing them.
+
+- **Request ID** — `RequestIDMiddleware` is the sole owner of the outbound `X-LLM-Request-ID` header and strips duplicates set by inner layers. An inbound `X-Request-ID` is echoed only if it matches `[A-Za-z0-9_.:-]{1,128}`; otherwise it is replaced (CR/LF would forge log lines and split headers). The ID lives on both `scope["state"]` and a contextvar, so log records correlate without threading it through call signatures.
+- **Exception handlers run outside user middleware.** Starlette's `ServerErrorMiddleware` wraps everything, so a 500 it emits never passes through `RequestIDMiddleware`. `error_response()` therefore sets the header itself, and `handle_unexpected_error` re-binds the contextvar before logging. Any future outermost-layer response must do the same.
+- **Logging is allowlist-based.** `JsonFormatter` serialises only `ALLOWED_EXTRA_FIELDS`; anything else passed as `extra` is dropped, and exceptions are reduced to type and message so tracebacks cannot leak paths or content. Widening the allowlist means checking the new field can never carry prompt text, credentials, or PII.
+- **Readiness is a probe registry.** Register with `gateway.api.health.readiness.register(name, probe)`; a raising probe counts as a failure, not a 500. Failure output names the failing probes but never their detail, because health is unauthenticated. M0 registers zero probes and reports `"checks": []` rather than implying verification it has not done.
+- **Error envelope** — build every error through `error_response()`. M0 covers only 404 and 500; M2 owns the full status/code taxonomy in §9.
 
 ## Control precedence
 

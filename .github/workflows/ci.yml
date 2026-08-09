@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format
+        run: ruff format --check .
+
+      - name: Type check
+        run: mypy
+
+      # No live provider credentials or spend: the spec requires default CI to
+      # run without them. PostgreSQL joins the matrix at M1.
+      - name: Test
+        run: pytest -q
+
+      - name: Smoke test the app boots and serves health
+        run: |
+          python -m gateway &
+          server_pid=$!
+          trap "kill $server_pid" EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health/live >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS -D headers.txt http://127.0.0.1:8000/health/live | tee body.txt
+          grep -qi '^x-llm-request-id:' headers.txt || {
+            echo "missing X-LLM-Request-ID header"; exit 1;
+          }
+          grep -q '"status":"live"' body.txt || { echo "unexpected body"; exit 1; }
