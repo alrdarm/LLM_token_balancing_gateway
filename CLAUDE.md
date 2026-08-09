@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0 (skeleton) complete pending approval.** Package, config, CI, lint/type/test tooling, ASGI app, health endpoints, request-ID propagation. Nothing downstream of that exists yet: no persistence, routing, providers, validation, or generation endpoints.
+**M0 (skeleton) approved and merged.** **M1 (persistence) complete pending approval.** Domain enums, ORM entities for all §6 tables, exact-decimal money storage, repositories, unit of work, Alembic migrations on SQLite + PostgreSQL, seeded registry/policies, and real readiness probes.
+
+Not built yet: API/canonical request (M2), routing (M3), budgets and providers (M4), orchestration (M5), streaming (M6), hardening (M7).
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -14,9 +16,10 @@ Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
+alembic upgrade head         # apply migrations (never run automatically at boot)
 python -m gateway            # serve on GATEWAY_HOST:GATEWAY_PORT (127.0.0.1:8000)
 
-pytest -q                    # full suite
+pytest -q                    # full suite (SQLite only unless the URL below is set)
 pytest tests/unit -q         # one layer
 pytest -k request_id         # one topic
 pytest tests/x.py::test_y    # one test
@@ -24,18 +27,34 @@ ruff check . && ruff format --check .
 mypy                         # strict
 ```
 
-### macOS pitfall: `pip install -e` can silently no-op
+### Running the PostgreSQL half of the matrix
 
-Some setuptools versions set the macOS `UF_HIDDEN` flag on `__editable__*.pth`, and CPython ≥3.12 `site.addpackage` deliberately skips hidden `.pth` files. The install then reports success while `import gateway` fails.
-
-`pytest` masks this (its `pythonpath = ["src"]` bypasses the install), so the CI app-boot smoke test is the real guard. Diagnose and fix with:
+Persistence tests are parametrised over both backends. PostgreSQL **skips** when unconfigured, so a green local run does not by itself prove the matrix passed:
 
 ```bash
-stat -f '%N flags=[%Sf]' .venv/lib/python3.12/site-packages/__editable__*.pth
-chflags nohidden .venv/lib/python3.12/site-packages/__editable__*.pth
+docker run -d --name gateway-pg -e POSTGRES_USER=gateway -e POSTGRES_PASSWORD=gateway \
+  -e POSTGRES_DB=gateway_test -p 55432:5432 postgres:16-alpine
+
+GATEWAY_TEST_POSTGRES_URL=postgresql+psycopg://gateway:gateway@127.0.0.1:55432/gateway_test pytest -q
 ```
 
-Upgrading setuptools resolved it here. Linux/CI is unaffected — `UF_HIDDEN` does not exist there.
+CI runs both and **fails** if the PostgreSQL entries skip, so the gate cannot pass by silent omission.
+
+### macOS + iCloud pitfall: `pip install -e` silently no-ops, repeatedly
+
+`import gateway` fails with `ModuleNotFoundError` even though `pip install -e` reported success and the `.pth` file contains the right path.
+
+Cause: the `__editable__*.pth` file carries the macOS `UF_HIDDEN` flag, and CPython ≥3.12's `site.addpackage` deliberately skips hidden `.pth` files. **This repo lives in iCloud Drive, which re-applies that flag on sync**, so clearing it once is not durable — it comes back.
+
+```bash
+stat -f '%N flags=[%Sf]' .venv/lib/python3.12/site-packages/__editable__*.pth   # diagnose
+chflags nohidden .venv/lib/python3.12/site-packages/__editable__*.pth           # temporary
+PYTHONPATH=src python -m gateway                                                 # reliable
+```
+
+`pytest` is immune (its `pythonpath = ["src"]` bypasses the install), which is exactly why it masks the problem — the CI app-boot smoke test is the real guard. Linux/CI is unaffected; `UF_HIDDEN` does not exist there.
+
+The durable fix is to keep the virtualenv outside iCloud (e.g. `python3 -m venv ~/.virtualenvs/llm-gateway`).
 
 ## Reading the spec
 
@@ -123,6 +142,17 @@ Extend these rather than reinventing them.
 - **Logging is allowlist-based.** `JsonFormatter` serialises only `ALLOWED_EXTRA_FIELDS`; anything else passed as `extra` is dropped, and exceptions are reduced to type and message so tracebacks cannot leak paths or content. Widening the allowlist means checking the new field can never carry prompt text, credentials, or PII.
 - **Readiness is a probe registry.** Register with `gateway.api.health.readiness.register(name, probe)`; a raising probe counts as a failure, not a 500. Failure output names the failing probes but never their detail, because health is unauthenticated. M0 registers zero probes and reports `"checks": []` rather than implying verification it has not done.
 - **Error envelope** — build every error through `error_response()`. M0 covers only 404 and 500; M2 owns the full status/code taxonomy in §9.
+
+## Conventions established in M1
+
+- **Money never touches float.** Use `Money` (`persistence/types.py`) for every monetary column and `to_money()` at every boundary. It stores `NUMERIC(20,9)` on PostgreSQL and **scaled-integer nanodollars on SQLite**, because SQLAlchemy's `Numeric` round-trips through `float` there and silently loses exactness. `to_money()` rejects `float` outright rather than converting.
+- **Timestamps are timezone-aware UTC.** `UTCDateTime` rejects naive datetimes instead of assuming UTC, since SQLite would otherwise return naive values that compare wrongly against aware ones and corrupt deadline arithmetic.
+- **Portable column types, not dialect variants.** `JSONDocument` resolves to `JSONB`/`JSON` per backend. Defining it as a type (rather than inline `with_variant`) keeps autogenerated migrations free of dialect imports, so every migration runs on both backends.
+- **Avoid SQL reserved words in column names.** `budgets.window_kind` is not `window` because WINDOW is reserved in PostgreSQL — SQLite accepted it and Postgres rejected the check constraint. Raw SQL in `CheckConstraint` is not auto-quoted.
+- **Migrations use `connectable.begin()`.** SQLAlchemy 2.0 has no autocommit and SQLite reports non-transactional DDL, so without an explicit transaction the tables are created but the `alembic_version` stamp is rolled back — leaving a schema that claims to be at no revision.
+- **Migrations never run at boot.** Pending migrations are a readiness failure (§11); an operator applies them. A booting replica must not mutate a schema its peers are serving.
+- **Repositories hold no policy.** Budget mutation is deliberately absent from `BudgetRepository`: it must go through M4's atomic algorithm (§6), and a convenience helper here would invite bypassing it.
+- **Readiness probes are real now.** `database`, `migrations`, `registry`, `active_policy`. Register more via `register_persistence_probes`-style contributions rather than touching the API layer.
 
 ## Control precedence
 

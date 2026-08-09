@@ -9,15 +9,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHON_VERSION: "3.12"
+
 jobs:
-  checks:
+  static:
+    name: Lint, format, types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: pyproject.toml
 
@@ -35,12 +39,97 @@ jobs:
       - name: Type check
         run: mypy
 
+  test:
+    name: Tests (SQLite + PostgreSQL)
+    runs-on: ubuntu-latest
+
+    # The spec requires SQLite always and PostgreSQL on integration. Running
+    # both in one job means the database matrix is exercised on every commit,
+    # not only on a nightly.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: gateway
+          POSTGRES_DB: gateway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gateway -d gateway_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      GATEWAY_TEST_POSTGRES_URL: postgresql+psycopg://gateway:gateway@127.0.0.1:5432/gateway_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
       # No live provider credentials or spend: the spec requires default CI to
-      # run without them. PostgreSQL joins the matrix at M1.
+      # run without them.
       - name: Test
         run: pytest -q
 
-      - name: Smoke test the app boots and serves health
+      - name: Fail if the PostgreSQL matrix silently skipped
+        # Without this, a missing service would turn the PostgreSQL half into
+        # skips and CI would still be green -- exactly the false pass the
+        # "both DBs" exit gate exists to prevent.
+        run: |
+          pytest tests/integration -q -rs 2>&1 | tee result.txt
+          if grep -q "skipping PostgreSQL matrix entry" result.txt; then
+            echo "PostgreSQL matrix entries were skipped; the service is not reachable."
+            exit 1
+          fi
+
+  smoke:
+    name: App boots and serves health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Migrate and seed a local SQLite database
+        env:
+          GATEWAY_DATABASE_URL: sqlite+pysqlite:///./ci-gateway.db
+        run: |
+          alembic upgrade head
+          python -c "
+          from gateway.config import get_settings
+          from gateway.persistence.engine import create_db_engine, create_session_factory
+          from gateway.persistence.seed import seed_all
+          from gateway.persistence.unit_of_work import unit_of_work
+
+          engine = create_db_engine(get_settings().database_url)
+          with unit_of_work(create_session_factory(engine)) as uow:
+              print('seeded:', seed_all(uow.session))
+          "
+
+      - name: Serve and probe
+        env:
+          GATEWAY_DATABASE_URL: sqlite+pysqlite:///./ci-gateway.db
         run: |
           python -m gateway &
           server_pid=$!
@@ -51,8 +140,17 @@ jobs:
             fi
             sleep 1
           done
-          curl -fsS -D headers.txt http://127.0.0.1:8000/health/live | tee body.txt
+
+          curl -fsS -D headers.txt http://127.0.0.1:8000/health/live | tee live.txt
           grep -qi '^x-llm-request-id:' headers.txt || {
             echo "missing X-LLM-Request-ID header"; exit 1;
           }
-          grep -q '"status":"live"' body.txt || { echo "unexpected body"; exit 1; }
+          grep -q '"status":"live"' live.txt || { echo "unexpected body"; exit 1; }
+
+          # A migrated, seeded database must report ready; anything else means
+          # the probes are not wired to real state.
+          curl -fsS http://127.0.0.1:8000/health/ready | tee ready.txt
+          grep -q '"status":"ready"' ready.txt || { echo "not ready"; exit 1; }
+          for check in database migrations registry active_policy; do
+            grep -q "\"$check\"" ready.txt || { echo "missing probe: $check"; exit 1; }
+          done
