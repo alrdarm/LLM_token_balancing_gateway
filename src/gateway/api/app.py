@@ -19,6 +19,9 @@ from gateway.api import health
 from gateway.api.errors import error_response, handle_not_found, handle_unexpected_error
 from gateway.api.request_id import RequestIDMiddleware, request_id_of
 from gateway.config import Settings, get_settings
+from gateway.persistence.engine import create_db_engine, create_session_factory
+from gateway.persistence.migrations_config import alembic_config
+from gateway.persistence.readiness import register_persistence_probes
 from gateway.telemetry.logging import configure_logging
 
 
@@ -26,9 +29,24 @@ from gateway.telemetry.logging import configure_logging
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start and stop process-wide resources.
 
-    Empty in M0; database engines and provider clients attach here.
+    The engine is created here and disposed on shutdown so connections are not
+    leaked across reloads. Migrations are deliberately *not* run on startup:
+    §11 makes pending migrations a readiness failure, which means an operator
+    applies them explicitly rather than a booting process mutating the schema
+    of a database other replicas are already serving.
     """
-    yield
+    settings: Settings = app.state.settings
+    engine = create_db_engine(settings.database_url, echo=settings.database_echo)
+
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
+
+    register_persistence_probes(health.readiness.register, engine, alembic_config())
+
+    try:
+        yield
+    finally:
+        engine.dispose()
 
 
 async def _http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
