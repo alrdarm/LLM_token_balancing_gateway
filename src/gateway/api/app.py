@@ -17,7 +17,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from gateway import __version__
-from gateway.api import generation, health, models_endpoint
+from gateway.api import generation, health, inspect, models_endpoint
 from gateway.api.errors import (
     error_response,
     handle_gateway_error,
@@ -98,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(models_endpoint.router)
     app.include_router(generation.router)
+    app.include_router(inspect.router)
 
     # Domain errors carry their own §9 status and code; register them before
     # the catch-all so they are never flattened into a 500.
