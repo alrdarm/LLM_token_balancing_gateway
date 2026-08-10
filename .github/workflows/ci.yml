@@ -154,3 +154,9 @@ jobs:
           for check in database migrations registry active_policy; do
             grep -q "\"$check\"" ready.txt || { echo "missing probe: $check"; exit 1; }
           done
+
+          # The public surface must be authenticated and enveloped end to end,
+          # not just under the test client.
+          status=$(curl -s -o unauth.txt -w '%{http_code}' http://127.0.0.1:8000/v1/models)
+          [ "$status" = "401" ] || { echo "unauthenticated /v1/models returned $status"; exit 1; }
+          grep -q '"code":"invalid_api_key"' unauth.txt || { echo "wrong error code"; exit 1; }

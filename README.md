@@ -12,11 +12,13 @@ The normative contract is
 
 ## Status
 
-**M0 (skeleton) — merged. M1 (persistence) — provisional.** Package, configuration, CI, the ASGI
-app, health endpoints, request-ID propagation, and the full persistence layer: domain values,
-ORM entities, exact-decimal money, repositories, Alembic migrations on SQLite and PostgreSQL, and
-a seeded registry. No API surface, routing, providers, or generation endpoints yet; those arrive
-in M2–M7.
+**M0–M1 merged. M2 (API/canonical) — provisional.** The full public API surface: both generation
+endpoints, `GET /v1/models`, bearer authentication, the §9 error taxonomy, gateway control
+precedence, and normalization to a single canonical request — on top of the M1 persistence layer.
+
+Generation endpoints currently return **503 `no_provider_available`**: every step up to provider
+invocation runs, but no adapters exist until M4. Routing (M3), budgets and providers (M4),
+orchestration (M5), streaming (M6), and hardening (M7) are still to come.
 
 ## Setup
 
@@ -70,10 +72,17 @@ provider credentials or spend. It fails if the PostgreSQL entries skip.
 
 ## Endpoints
 
-| Method | Path            | Purpose                                        |
-| ------ | --------------- | ---------------------------------------------- |
-| GET    | `/health/live`  | Process liveness; consults no dependencies      |
-| GET    | `/health/ready` | Runs every registered dependency probe          |
+| Method | Path                    | Purpose                                              |
+| ------ | ----------------------- | ---------------------------------------------------- |
+| GET    | `/health/live`          | Process liveness; consults no dependencies            |
+| GET    | `/health/ready`         | Runs every registered dependency probe                |
+| GET    | `/v1/models`            | Selectors and enabled explicit model IDs              |
+| POST   | `/v1/chat/completions`  | Chat Completions-compatible generation                |
+| POST   | `/v1/responses`         | Responses-compatible generation                       |
+
+All non-health endpoints require `Authorization: Bearer <key>`. Keys are stored as keyed digests
+only. Callers tune behaviour with a top-level `gateway` object or `X-LLM-*` headers; resolution is
+strictest-first, and for privacy, risk, and quality the strictest value across all layers wins.
 
 Health endpoints are unauthenticated. Every response carries `X-LLM-Request-ID`; a client may
 supply `X-Request-ID` and it is echoed when it matches `[A-Za-z0-9_.:-]{1,128}`, otherwise the

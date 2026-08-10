@@ -10,15 +10,24 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from gateway import __version__
-from gateway.api import health
-from gateway.api.errors import error_response, handle_not_found, handle_unexpected_error
+from gateway.api import generation, health, models_endpoint
+from gateway.api.errors import (
+    error_response,
+    handle_gateway_error,
+    handle_not_found,
+    handle_request_validation_error,
+    handle_unexpected_error,
+)
 from gateway.api.request_id import RequestIDMiddleware, request_id_of
 from gateway.config import Settings, get_settings
+from gateway.domain.errors import GatewayError
 from gateway.persistence.engine import create_db_engine, create_session_factory
 from gateway.persistence.migrations_config import alembic_config
 from gateway.persistence.readiness import register_persistence_probes
@@ -87,7 +96,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
 
     app.include_router(health.router)
+    app.include_router(models_endpoint.router)
+    app.include_router(generation.router)
 
+    # Domain errors carry their own §9 status and code; register them before
+    # the catch-all so they are never flattened into a 500.
+    app.add_exception_handler(GatewayError, handle_gateway_error)
+    app.add_exception_handler(RequestValidationError, handle_request_validation_error)
+    app.add_exception_handler(ValidationError, handle_request_validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(Exception, handle_unexpected_error)
 

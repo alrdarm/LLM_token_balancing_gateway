@@ -7,11 +7,15 @@ arrive with the milestones that need them.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from gateway.domain.enums import Privacy
+from gateway.persistence.types import to_money
 
 Environment = Literal["local", "dev", "staging", "prod"]
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -46,6 +50,22 @@ class Settings(BaseSettings):
     #: Deployment-specific key for hashing inputs and outputs. The default is
     #: usable for local development only; see ``_validate_hash_key``.
     hash_key: str = "local-development-hash-key"
+
+    #: Deployment control floor -- the highest-precedence layer (§2). A caller
+    #: can be stricter than this but never looser.
+    #: ``None`` means the deployment pins nothing and callers decide.
+    deployment_privacy_floor: Privacy | None = None
+    #: Applied when a caller sets no ceiling of their own. Parsed as Decimal.
+    default_max_cost: Decimal = Decimal("1.000000000")
+    default_max_latency_ms: int = 60_000
+
+    @field_validator("default_max_cost", mode="before")
+    @classmethod
+    def _exact_default_cost(cls, value: object) -> object:
+        """Reject float configuration for money, as everywhere else."""
+        if value is None or isinstance(value, Decimal):
+            return value
+        return to_money(value)  # type: ignore[arg-type]
 
     @property
     def is_production(self) -> bool:
