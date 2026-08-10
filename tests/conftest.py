@@ -126,3 +126,74 @@ def session(session_factory: sessionmaker[Session]) -> Iterator[Session]:
         yield session
     finally:
         session.close()
+
+
+# ---------------------------------------------------------------------------
+# API fixtures (M2)
+# ---------------------------------------------------------------------------
+
+TEST_API_KEY = "sk-gateway-test-key"
+TEST_DEBUG_API_KEY = "sk-gateway-debug-key"
+
+
+@pytest.fixture
+def api_settings(settings: Settings, sqlite_url: str) -> Settings:
+    """Settings pointed at a migrated, seeded SQLite database."""
+    return settings.model_copy(update={"database_url": sqlite_url})
+
+
+@pytest.fixture
+def api_app(api_settings: Settings) -> Iterator[FastAPI]:
+    """An app whose database has schema, seed data, and credentials.
+
+    Built through the real migrations and seed path so the fixture cannot drift
+    from what a deployed gateway would actually have.
+    """
+    from alembic import command
+
+    from gateway.api.auth import create_api_key
+    from gateway.persistence.seed import seed_all
+
+    command.upgrade(alembic_config(api_settings.database_url), "head")
+
+    engine = create_db_engine(api_settings.database_url)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        seed_all(session)
+        create_api_key(
+            session,
+            client_id="client_test",
+            secret=TEST_API_KEY,
+            hash_key=api_settings.hash_key,
+            label="test",
+            scopes=[],
+        )
+        create_api_key(
+            session,
+            client_id="client_debug",
+            secret=TEST_DEBUG_API_KEY,
+            hash_key=api_settings.hash_key,
+            label="debug",
+            scopes=["debug"],
+        )
+        session.commit()
+    engine.dispose()
+
+    readiness.clear()
+    yield create_app(api_settings)
+    readiness.clear()
+
+
+@pytest.fixture
+def api_client(api_app: FastAPI) -> Iterator[TestClient]:
+    """Authenticated-by-default test client."""
+    with TestClient(api_app, raise_server_exceptions=False) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        yield client
+
+
+@pytest.fixture
+def anonymous_client(api_app: FastAPI) -> Iterator[TestClient]:
+    """Client with no credential, for authentication tests."""
+    with TestClient(api_app, raise_server_exceptions=False) as client:
+        yield client

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0 (skeleton) approved and merged.** **M1 (persistence) complete pending approval.** Domain enums, ORM entities for all §6 tables, exact-decimal money storage, repositories, unit of work, Alembic migrations on SQLite + PostgreSQL, seeded registry/policies, and real readiness probes.
+**M0–M1 approved and merged.** **M2 (API/canonical) complete pending approval.** Both generation endpoints, `GET /v1/models`, strict schemas, bearer auth with hashed keys and scopes, the full §9 error taxonomy, control precedence, and normalization to `CanonicalRequest`.
 
-Not built yet: API/canonical request (M2), routing (M3), budgets and providers (M4), orchestration (M5), streaming (M6), hardening (M7).
+Not built yet: routing (M3), budgets and providers (M4), orchestration (M5), streaming (M6), hardening (M7). **Generation endpoints return `503 no_provider_available`** — the pipeline is complete up to the point where an adapter would be invoked, and no adapters exist until M4.
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -153,6 +153,16 @@ Extend these rather than reinventing them.
 - **Migrations never run at boot.** Pending migrations are a readiness failure (§11); an operator applies them. A booting replica must not mutate a schema its peers are serving.
 - **Repositories hold no policy.** Budget mutation is deliberately absent from `BudgetRepository`: it must go through M4's atomic algorithm (§6), and a convenience helper here would invite bypassing it.
 - **Readiness probes are real now.** `database`, `migrations`, `registry`, `active_policy`. Register more via `register_persistence_probes`-style contributions rather than touching the API layer.
+
+## Conventions established in M2
+
+- **Two validation postures.** The `gateway` control block is `extra="forbid"` — a typo there governs privacy or spend, and ignoring it would apply weaker controls than the caller believed. The surrounding OpenAI body is `extra="allow"`, and unknown fields are reported through `ignored_fields` and logged, per §1's "ignored with telemetry".
+- **Precedence is not "last wins".** For privacy, risk, and quality the effective value is the *strictest* across all layers, so a lower-precedence layer asking for something stricter still wins. `max_attempts` takes the **lowest** cap, allow-lists **intersect**, deny-lists **union**. Getting this backwards would let a header downgrade a deployment's privacy floor.
+- **Money never arrives as a JSON float.** `max_cost` accepts a decimal string or int; a float is rejected with an explanatory message, since JSON floats cannot represent cents exactly.
+- **Errors are domain objects.** Raise a `GatewayError` subclass from `domain/errors.py`; `handle_gateway_error` renders the §9 envelope. Never build error responses inline in an endpoint.
+- **Validation errors are redacted.** Pydantic's default body echoes submitted values — prompt text, for these endpoints. `redacted_validation_message` surfaces the field location and reason only, and returns 400 rather than pydantic's 422.
+- **Auth failures are uniform.** Unknown, disabled, and expired keys all return the identical 401, so keys cannot be enumerated. Only key digests are stored.
+- **SDK compatibility is tested with the real SDK.** `tests/contract/test_sdk_smoke.py` drives the `openai` client against the in-process app via `TestClient` (which runs lifespan; a bare `ASGITransport` does not). No network, no credentials, no spend.
 
 ## Control precedence
 

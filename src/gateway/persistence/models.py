@@ -520,3 +520,39 @@ class IdempotencyRecord(TimestampMixin, Base):
             f"state IN {_enum_values(IdempotencyState)}", name="idempotency_state_known"
         ),
     )
+
+
+class APIKey(TimestampMixin, Base):
+    """A client credential (§11).
+
+    Only a keyed digest of the secret is stored, never the secret itself: a
+    database disclosure must not hand an attacker working credentials.
+    Rotation is expressed by issuing a new row and expiring the old one rather
+    than editing a key in place, so audit history stays intact.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    #: HMAC of the presented secret under the deployment hash key.
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    #: Non-secret prefix, for identifying a key in logs without revealing it.
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+
+    scopes: Mapped[list[str]] = mapped_column(JSONDocument, nullable=False, default=list)
+    #: Client-level control overrides, applied above headers and body (§2).
+    control_overrides: Mapped[dict[str, Any]] = mapped_column(
+        JSONDocument, nullable=False, default=dict
+    )
+
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("key_hash", name="uq_api_keys_key_hash"),
+        Index("ix_api_keys_client_enabled", "client_id", "enabled"),
+    )
