@@ -100,23 +100,36 @@ def test_risk_is_none_when_nothing_sets_it():
 # --- highest-precedence-wins dimensions -----------------------------------
 
 
-def test_header_overrides_body_for_cost():
+def test_cost_ceiling_takes_the_lowest_value_not_the_top_layer():
+    """A ceiling is a limit, so the strictest wins wherever it came from.
+
+    Regression: a deployment *default* placed in the top layer used to win
+    outright, so a caller could never set a tighter ceiling than the default.
+    """
     resolved = resolve(
-        headers=ControlLayer(max_cost=Decimal("0.10")),
-        body=ControlLayer(max_cost=Decimal("5.00")),
+        headers=ControlLayer(max_cost=Decimal("5.00")),
+        body=ControlLayer(max_cost=Decimal("0.10")),
     )
     assert resolved.max_cost == Decimal("0.10")
 
 
-def test_client_policy_overrides_header():
+def test_caller_cannot_raise_a_ceiling_set_higher_up():
     resolved = resolve(
         client=ControlLayer(max_cost=Decimal("0.01")),
-        headers=ControlLayer(max_cost=Decimal("2.00")),
+        body=ControlLayer(max_cost=Decimal("2.00")),
     )
     assert resolved.max_cost == Decimal("0.01")
 
 
-def test_deployment_overrides_everything():
+def test_system_default_cost_ceiling_still_applies():
+    resolved = resolve(
+        system_defaults=GatewayControls(max_cost=Decimal("1.00")),
+        body=ControlLayer(max_cost=Decimal("50.00")),
+    )
+    assert resolved.max_cost == Decimal("1.00")
+
+
+def test_latency_ceiling_takes_the_lowest_value():
     resolved = resolve(
         deployment=ControlLayer(max_latency_ms=1000),
         client=ControlLayer(max_latency_ms=5000),

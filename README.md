@@ -12,12 +12,12 @@ The normative contract is
 
 ## Status
 
-**M0–M1 merged. M2 (API/canonical) — provisional.** The full public API surface: both generation
-endpoints, `GET /v1/models`, bearer authentication, the §9 error taxonomy, gateway control
-precedence, and normalization to a single canonical request — on top of the M1 persistence layer.
+**M0–M2 merged. M3 (routing) — provisional.** Classification, model registry snapshots, the
+ordered eligibility pipeline, expected-cost scoring, and `POST /route/inspect`, on top of the
+M2 API surface.
 
-Generation endpoints currently return **503 `no_provider_available`**: every step up to provider
-invocation runs, but no adapters exist until M4. Routing (M3), budgets and providers (M4),
+Generation endpoints still return **503 `no_provider_available`**: a request is now classified,
+gated, and ranked, but no adapter exists to invoke until M4. Budgets and providers (M4),
 orchestration (M5), streaming (M6), and hardening (M7) are still to come.
 
 ## Setup
@@ -79,6 +79,7 @@ provider credentials or spend. It fails if the PostgreSQL entries skip.
 | GET    | `/v1/models`            | Selectors and enabled explicit model IDs              |
 | POST   | `/v1/chat/completions`  | Chat Completions-compatible generation                |
 | POST   | `/v1/responses`         | Responses-compatible generation                       |
+| POST   | `/route/inspect`        | Classify, filter, rank, and explain — no side effects |
 
 All non-health endpoints require `Authorization: Bearer <key>`. Keys are stored as keyed digests
 only. Callers tune behaviour with a top-level `gateway` object or `X-LLM-*` headers; resolution is

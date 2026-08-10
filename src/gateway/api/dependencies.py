@@ -108,14 +108,12 @@ def get_client(
 def deployment_layer(settings: Settings) -> ControlLayer:
     """The deployment's own control floor -- the highest-precedence layer.
 
-    Only values the deployment actually pins appear here; an unset field must
-    stay ``None`` so it does not silently outrank a caller's stricter choice.
+    Only values the deployment explicitly *pins* belong here. Deployment
+    defaults live in ``system_defaults`` instead: putting a default in this
+    layer would make it outrank everything, so a caller could never set a
+    tighter ceiling than the default they were given.
     """
-    return ControlLayer(
-        privacy=settings.deployment_privacy_floor,
-        max_cost=settings.default_max_cost,
-        max_latency_ms=settings.default_max_latency_ms,
-    )
+    return ControlLayer(privacy=settings.deployment_privacy_floor)
 
 
 def client_layer(client: AuthenticatedClient) -> ControlLayer:

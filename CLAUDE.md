@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0–M1 approved and merged.** **M2 (API/canonical) complete pending approval.** Both generation endpoints, `GET /v1/models`, strict schemas, bearer auth with hashed keys and scopes, the full §9 error taxonomy, control precedence, and normalization to `CanonicalRequest`.
+**M0–M2 approved and merged.** **M3 (routing) complete pending approval.** Heuristic classifier, registry snapshots, the ordered eligibility pipeline, expected-cost scoring, and `POST /route/inspect`.
 
-Not built yet: routing (M3), budgets and providers (M4), orchestration (M5), streaming (M6), hardening (M7). **Generation endpoints return `503 no_provider_available`** — the pipeline is complete up to the point where an adapter would be invoked, and no adapters exist until M4.
+Not built yet: budgets and providers (M4), orchestration (M5), streaming (M6), hardening (M7). **Generation endpoints still return `503 no_provider_available`** — planning is complete, but no adapter exists to invoke until M4.
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -163,6 +163,16 @@ Extend these rather than reinventing them.
 - **Validation errors are redacted.** Pydantic's default body echoes submitted values — prompt text, for these endpoints. `redacted_validation_message` surfaces the field location and reason only, and returns 400 rather than pydantic's 422.
 - **Auth failures are uniform.** Unknown, disabled, and expired keys all return the identical 401, so keys cannot be enumerated. Only key digests are stored.
 - **SDK compatibility is tested with the real SDK.** `tests/contract/test_sdk_smoke.py` drives the `openai` client against the in-process app via `TestClient` (which runs lifespan; a bare `ASGITransport` does not). No network, no credentials, no spend.
+
+## Conventions established in M3
+
+- **Ceilings take the minimum across layers, never "top layer wins".** `max_cost` and `max_latency_ms` resolve via `_lowest()`. A deployment *default* placed in the top precedence layer silently overrode every caller ceiling — regression-tested now. Only values a deployment explicitly *pins* belong in `deployment_layer()`; defaults go in `system_defaults`.
+- **Score components are normalised across the candidate set**, not against constants. A realistic request costs fractions of a cent while latency runs to seconds, so any fixed divisor leaves cost's spread orders of magnitude smaller and the weights stop meaning what they say.
+- **Ranking ties break on exact `Decimal` cost, then model ID** — never on float equality. Determinism is a §4 contract, not a nicety.
+- **Every gate is evaluated, not short-circuited.** `/route/inspect` must explain *all* reasons a model was excluded.
+- **The classifier is deterministic by design.** A model-based classifier would make identical requests route differently and break inspect/execute parity. It never raises: weak signals fall back with `used_fallback` set.
+- **Planning is shared.** `services/planning.build_plan` is the single path used by inspect and (from M5) the orchestrator, so T08 parity cannot drift.
+- **Priors live in data.** `models.latency_prior_ms` / `pass_rate_prior` / `failure_rate_prior` carry `priors_source`, so measured values replace data rather than code.
 
 ## Control precedence
 

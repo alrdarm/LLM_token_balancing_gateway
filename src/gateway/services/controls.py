@@ -69,6 +69,16 @@ def _first_set(*values: Any) -> Any:
     return None
 
 
+def _lowest(*values: Any) -> Any:
+    """Return the smallest value that was set, or ``None`` if none were.
+
+    Used for ceilings, where the strictest limit must win regardless of which
+    layer supplied it.
+    """
+    present = [value for value in values if value is not None]
+    return min(present) if present else None
+
+
 def resolve_controls(
     *,
     deployment: ControlLayer,
@@ -96,9 +106,16 @@ def resolve_controls(
     if forced is not None:
         privacy = resolve_strictest_privacy(privacy, forced)
 
+    # Ceilings take the *lowest* applicable value, never the highest-precedence
+    # one. "Never exceed the caller's request cost ceiling" (§2) has to hold in
+    # both directions: a deployment default must not silently raise a limit the
+    # caller set, and a caller must not raise one the deployment set.
+    max_cost = _lowest(*(layer.max_cost for layer in ordered), system_defaults.max_cost)
+    max_latency_ms = _lowest(
+        *(layer.max_latency_ms for layer in ordered), system_defaults.max_latency_ms
+    )
+
     # Highest-precedence-wins dimensions.
-    max_cost = _first_set(*(layer.max_cost for layer in ordered))
-    max_latency_ms = _first_set(*(layer.max_latency_ms for layer in ordered))
     allow_fallback = _first_set(*(layer.allow_fallback for layer in ordered))
     validation = _first_set(*(layer.validation for layer in ordered))
     task_class = _first_set(*(layer.task_class for layer in ordered))
@@ -137,10 +154,8 @@ def resolve_controls(
         system_defaults,
         quality=quality,
         privacy=privacy,
-        max_cost=max_cost if max_cost is not None else system_defaults.max_cost,
-        max_latency_ms=(
-            max_latency_ms if max_latency_ms is not None else system_defaults.max_latency_ms
-        ),
+        max_cost=max_cost,
+        max_latency_ms=max_latency_ms,
         provider_allow=allow or (),
         provider_deny=tuple(sorted(deny)),
         required_capabilities=frozenset(capabilities),

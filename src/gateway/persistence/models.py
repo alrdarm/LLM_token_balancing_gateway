@@ -24,6 +24,7 @@ from typing import Any
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -116,6 +117,16 @@ class Model(TimestampMixin, Base):
 
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
 
+    #: Conservative v0.1 routing priors (§10). These are *priors*, not
+    #: measurements: ``priors_source`` records where they came from so later
+    #: empirical values can replace them as data, without changing the scorer.
+    latency_prior_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=2000)
+    pass_rate_prior: Mapped[float] = mapped_column(Float, nullable=False, default=0.8)
+    failure_rate_prior: Mapped[float] = mapped_column(Float, nullable=False, default=0.02)
+    priors_source: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="v0.1-conservative-prior"
+    )
+
     prices: Mapped[list[ModelPrice]] = relationship(
         back_populates="model", cascade="all, delete-orphan"
     )
@@ -128,6 +139,14 @@ class Model(TimestampMixin, Base):
         CheckConstraint(f"quality_tier IN {_enum_values(Quality)}", name="quality_tier_known"),
         CheckConstraint("context_window_tokens > 0", name="context_window_positive"),
         CheckConstraint("max_output_tokens > 0", name="max_output_positive"),
+        CheckConstraint("latency_prior_ms > 0", name="latency_prior_positive"),
+        CheckConstraint(
+            "pass_rate_prior >= 0 AND pass_rate_prior <= 1", name="pass_rate_prior_is_probability"
+        ),
+        CheckConstraint(
+            "failure_rate_prior >= 0 AND failure_rate_prior <= 1",
+            name="failure_rate_prior_is_probability",
+        ),
     )
 
 
