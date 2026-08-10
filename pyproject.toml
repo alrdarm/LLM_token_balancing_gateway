@@ -25,6 +25,7 @@ dev = [
     "openai>=1.60",
     "psycopg[binary]>=3.2",
     "pytest>=8.3",
+    "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "ruff>=0.7",
 ]
@@ -81,6 +82,7 @@ disallow_untyped_defs = false
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
 markers = [
     "integration: exercises real I/O such as a database (deselect with -m 'not integration')",
     "contract: pins public wire behaviour, including real-SDK compatibility",

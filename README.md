@@ -12,13 +12,12 @@ The normative contract is
 
 ## Status
 
-**M0–M2 merged. M3 (routing) — provisional.** Classification, model registry snapshots, the
-ordered eligibility pipeline, expected-cost scoring, and `POST /route/inspect`, on top of the
-M2 API surface.
+**M0–M3 merged. M4 (budgets/providers) — provisional.** Atomic budget reservation, four provider
+adapters, retry policy, and circuit breaking, on top of M3's routing.
 
-Generation endpoints still return **503 `no_provider_available`**: a request is now classified,
-gated, and ranked, but no adapter exists to invoke until M4. Budgets and providers (M4),
-orchestration (M5), streaming (M6), and hardening (M7) are still to come.
+Generation endpoints still return **503 `no_provider_available`**: budgets can be reserved and
+adapters can be invoked, but nothing drives them until M5's orchestrator. Orchestration (M5),
+streaming (M6), and hardening (M7) are still to come.
 
 ## Setup
 

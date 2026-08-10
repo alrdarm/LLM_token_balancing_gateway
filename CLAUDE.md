@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0–M2 approved and merged.** **M3 (routing) complete pending approval.** Heuristic classifier, registry snapshots, the ordered eligibility pipeline, expected-cost scoring, and `POST /route/inspect`.
+**M0–M3 approved and merged.** **M4 (budgets/providers) complete pending approval.** Atomic budget reservation, four provider adapters (deterministic fake, alien fake, OpenAI-compatible HTTP, CommandCode CLI), retry policy, and circuit breaking.
 
-Not built yet: budgets and providers (M4), orchestration (M5), streaming (M6), hardening (M7). **Generation endpoints still return `503 no_provider_available`** — planning is complete, but no adapter exists to invoke until M4.
+Not built yet: orchestration (M5), streaming (M6), hardening (M7). **Generation endpoints still return `503 no_provider_available`** — the pieces exist but nothing drives them until M5's state machine.
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -173,6 +173,16 @@ Extend these rather than reinventing them.
 - **The classifier is deterministic by design.** A model-based classifier would make identical requests route differently and break inspect/execute parity. It never raises: weak signals fall back with `used_fallback` set.
 - **Planning is shared.** `services/planning.build_plan` is the single path used by inspect and (from M5) the orchestrator, so T08 parity cannot drift.
 - **Priors live in data.** `models.latency_prior_ms` / `pass_rate_prior` / `failure_rate_prior` carry `priors_source`, so measured values replace data rather than code.
+
+## Conventions established in M4
+
+- **Reservation and settlement both take locks.** `settle`/`release` are read-modify-writes on `reserved` and `spent`, so they lock the same rows `reserve` does, in the same order (reservations by ID, then budgets by ID). Without it PostgreSQL's READ COMMITTED lets concurrent settlements lose updates — money silently vanishing. SQLite's whole-database write lock hides this, which is why the concurrency suite must run on both.
+- **Never hold a DB lock across a provider call.** Reserve, commit, invoke, settle in a second transaction. A provider taking 30s would otherwise serialise the whole gateway.
+- **Adapters translate; they never decide.** No internal retries — an adapter that retries spends money the budget manager never reserved. Failures are raised as `ProviderFailure` carrying an `AttemptOutcome`, so §8's table is applied by the orchestrator, not inferred from strings.
+- **The alien fake is a guard, not a toy.** `AlienProvider` is deliberately un-OpenAI-shaped (nested segments, `tokens_in`/`tokens_out`, `COMPLETE`/`TRUNCATED`). Since the first real adapter is OpenAI-compatible — near-identity mapping — it is what stops an OpenAI-shaped assumption hiding in `ProviderAdapter`. Keep it structurally different.
+- **CLI adapter security is non-negotiable (§11):** argument arrays with no shell, prompt over stdin (never argv — the process table is world-readable), allowlisted child environment, bounded output, and SIGTERM→SIGKILL to the whole *process group* so grandchildren die too.
+- **Outbound HTTP is allowlisted** and plaintext is permitted only for localhost, so a misconfigured base URL fails closed instead of shipping prompts to an unexpected host.
+- **Full jitter on retries**, because 429s are correlated across callers and identical backoff resynchronises them into the herd the backoff exists to prevent.
 
 ## Control precedence
 
