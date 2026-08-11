@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0–M4 approved and merged.** **M5 (orchestration) complete pending approval.** The §7 state machine, deterministic validators, repair and escalation, idempotency, and `dry_run` — wired into both generation endpoints.
+**M0–M5 approved and merged.** **M6 (streaming) complete pending approval.** Both SSE protocols, the first-token boundary, buffer-or-reject validation policy, and cancellation on disconnect.
 
-**Requests now run end to end** against the deterministic fake provider. Not built yet: streaming (M6) and hardening (M7).
+Only M7 (hardening) remains: redaction snapshots, observability, the reconciler, load and security checks, and the runbook.
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -193,6 +193,15 @@ Extend these rather than reinventing them.
 - **Idempotency claims rely on the unique constraint**, not a read-then-check: two concurrent callers race, one wins the insert, the loser is told the request is in progress.
 - **The request row is written before the idempotency claim** (FK ordering), in the same uncommitted transaction, so a conflict rolls both back.
 - **Judges are stand-ins.** `independent_review`/`rubric_judge` pass any non-empty output and say so. Replacing them must change only what they return, not the orchestrator.
+
+## Conventions established in M6
+
+- **The two SSE protocols are not interchangeable.** Chat streams bare `data:` frames of `chat.completion.chunk` ending in `data: [DONE]`; Responses streams *named* `event: response.*` frames ending in `response.completed`. A test asserts neither leaks into the other, because emitting the wrong shape breaks SDKs in ways that look like a gateway bug.
+- **Everything that could produce a 4xx happens before headers go out** — planning, eligibility, the buffer-or-reject decision, and the budget reservation. After that the status is committed and failures must be reported *in-band*.
+- **Buffer or reject, by policy** (`services/streaming.decide`): buffer for cheap deterministic gates, reject with `validation_requires_buffering` when a judge is planned. Never silently drop a gate to keep a stream flowing.
+- **A stream produces at most one attempt.** §4 forbids switching models past the first token, so there is no fallback or escalation path to write.
+- **Disconnect settles what was emitted and releases the rest**, then re-raises so cancellation still propagates. `CancelledError`/`GeneratorExit` are caught only to resolve the reservation.
+- **Frames split payload newlines across `data:` lines.** A raw newline terminates an SSE frame early and corrupts everything after it.
 
 ## Control precedence
 

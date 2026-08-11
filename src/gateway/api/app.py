@@ -33,7 +33,7 @@ from gateway.persistence.migrations_config import alembic_config
 from gateway.persistence.readiness import register_persistence_probes
 from gateway.providers.base import AdapterRegistry
 from gateway.providers.fake import FakeProvider
-from gateway.services.orchestrator import Orchestrator
+from gateway.services.orchestrator import StreamingOrchestrator
 from gateway.services.resilience import CircuitBreaker
 from gateway.telemetry.logging import configure_logging
 from gateway.validators.deterministic import default_registry
@@ -64,7 +64,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.adapters = adapters
     app.state.breaker = CircuitBreaker()
-    app.state.orchestrator = Orchestrator(
+    app.state.orchestrator = StreamingOrchestrator(
         session_factory=session_factory,
         adapters=adapters,
         validators=default_registry(),

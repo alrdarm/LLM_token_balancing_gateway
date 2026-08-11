@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
 
 from gateway.api.auth import SCOPE_DEBUG, AuthenticatedClient
 from gateway.api.dependencies import (
@@ -28,6 +29,7 @@ from gateway.api.errors import redacted_validation_message
 from gateway.api.request_id import request_id_of
 from gateway.api.schemas import ChatCompletionRequest, ResponsesRequest
 from gateway.api.serializers import error_for, to_chat_completion, to_response
+from gateway.api.streaming_endpoints import stream_response
 from gateway.config import Settings
 from gateway.domain.enums import RequestState
 from gateway.domain.errors import (
@@ -42,11 +44,16 @@ from gateway.domain.requests import SELECTORS, CanonicalRequest, GatewayControls
 from gateway.persistence.models import Request as RequestRow
 from gateway.persistence.repositories import ModelRepository
 from gateway.services import idempotency as idempotency_service
+from gateway.services import streaming as streaming_service
 from gateway.services.normalizer import (
     normalize_chat_request,
     normalize_responses_request,
 )
-from gateway.services.orchestrator import OrchestrationResult, Orchestrator
+from gateway.services.orchestrator import (
+    OrchestrationResult,
+    Orchestrator,
+    StreamingOrchestrator,
+)
 from gateway.services.planning import build_plan
 
 logger = logging.getLogger(__name__)
@@ -190,6 +197,52 @@ def _dry_run_document(canonical: CanonicalRequest, session: Session) -> dict[str
     return _serialize(result, canonical, request_id=canonical.request_id, disclose=False)
 
 
+async def _stream(
+    request: Request,
+    session: Session,
+    canonical: CanonicalRequest,
+    *,
+    disclose: bool,
+) -> StreamingResponse:
+    """Serve a streaming request (§4).
+
+    Everything that could still produce a 4xx -- planning, eligibility, the
+    buffer-or-reject decision, and the budget reservation inside the
+    orchestrator -- happens before the response is returned, because once
+    headers are committed the status can no longer change.
+    """
+    orchestrator: StreamingOrchestrator | None = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None:  # pragma: no cover - defensive
+        raise NoProviderAvailableError(
+            "No provider adapter is currently available to serve this request."
+        )
+
+    deadline_at = datetime.now(UTC) + timedelta(
+        milliseconds=canonical.controls.max_latency_ms or 60_000
+    )
+
+    _persist_request(session, canonical, deadline_at)
+    planning = build_plan(session, canonical)
+
+    # Raises validation_requires_buffering (400) when a judge gate is planned,
+    # which must happen before any byte is committed.
+    stream_plan = streaming_service.decide(
+        canonical, planning.features, planning.plan.validation_plan
+    )
+    session.commit()
+
+    return await stream_response(
+        canonical=canonical,
+        planning=planning,
+        stream_plan=stream_plan,
+        orchestrator=orchestrator,
+        session=session,
+        scopes=_budget_scopes(canonical),
+        deadline_at=deadline_at,
+        disclose=disclose,
+    )
+
+
 async def _run(
     request: Request,
     session: Session,
@@ -264,8 +317,8 @@ async def create_chat_completion(
     session: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
     client: AuthenticatedClient = Depends(get_client),
-) -> dict[str, Any]:
-    """Generate a Chat Completions response."""
+) -> Any:
+    """Generate a Chat Completions response, streamed or complete."""
     payload = _validate_body(ChatCompletionRequest, body)
     controls = _prepare(
         request=request,
@@ -289,6 +342,9 @@ async def create_chat_completion(
     if controls.dry_run:
         return _dry_run_document(canonical, session)
 
+    if canonical.stream:
+        return await _stream(request, session, canonical, disclose=client.has_scope(SCOPE_DEBUG))
+
     outcome = await _run(request, session, canonical)
     if not outcome.succeeded:
         raise error_for(outcome)
@@ -303,8 +359,8 @@ async def create_response(
     session: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
     client: AuthenticatedClient = Depends(get_client),
-) -> dict[str, Any]:
-    """Generate a Responses-API response."""
+) -> Any:
+    """Generate a Responses-API response, streamed or complete."""
     payload = _validate_body(ResponsesRequest, body)
     controls = _prepare(
         request=request,
@@ -327,6 +383,9 @@ async def create_response(
 
     if controls.dry_run:
         return _dry_run_document(canonical, session)
+
+    if canonical.stream:
+        return await _stream(request, session, canonical, disclose=client.has_scope(SCOPE_DEBUG))
 
     outcome = await _run(request, session, canonical)
     if not outcome.succeeded:
