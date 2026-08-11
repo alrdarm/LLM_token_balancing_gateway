@@ -26,7 +26,7 @@ from typing import Any
 from gateway.domain.enums import ValidationResult
 from gateway.domain.requests import CanonicalRequest
 from gateway.providers.base import ProviderResult
-from gateway.validators.base import ValidationContext, ValidationOutcome
+from gateway.validators.base import ValidationContext, ValidationOutcome, ValidatorRegistry
 
 #: Statements that write or destroy data. A "review" or "generate" task that
 #: emits one of these is a safety problem, not a style problem (§10).
@@ -399,10 +399,8 @@ class CodeCompileValidator:
         return ValidationOutcome(validator=self.name, result=ValidationResult.PASS)
 
 
-def default_registry() -> Any:
+def default_registry() -> ValidatorRegistry:
     """A registry holding every deterministic validator."""
-    from gateway.validators.base import ValidatorRegistry
-
     registry = ValidatorRegistry()
     for validator in (
         JSONParseValidator(),
@@ -413,6 +411,47 @@ def default_registry() -> Any:
         LabelCheckValidator(),
         CitationCheckValidator(),
         CodeCompileValidator(),
+        # Stand-ins until a real judge lands; see FakeJudgeValidator.
+        FakeJudgeValidator("independent_review"),
+        FakeJudgeValidator("rubric_judge"),
     ):
         registry.register(validator)
     return registry
+
+
+class FakeJudgeValidator:
+    """Deterministic stand-in for an LLM judge (§13 build order).
+
+    §10 assigns ``independent_review`` and ``rubric_judge`` to high-risk and
+    subjective classes, and a real implementation is a *billable provider call*
+    recorded as its own attempt (§6 links it through ``validator_attempt_id``).
+    That is deliberately not built yet: the spec's build order says to complete
+    orchestration against fake validators first, so state and budget
+    correctness are established before judge variability enters.
+
+    This stand-in passes any non-empty output. It is honest about what it is --
+    it never claims to have assessed quality -- and it keeps the seeded policy
+    fixtures runnable end to end. Replacing it must not change the orchestrator,
+    only what this returns.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def validate(
+        self,
+        request: CanonicalRequest,
+        candidate: ProviderResult,
+        context: ValidationContext,
+    ) -> ValidationOutcome:
+        if not candidate.text.strip():
+            return ValidationOutcome(
+                validator=self.name,
+                result=ValidationResult.FAIL_QUALITY,
+                detail_codes=("empty_output",),
+            )
+        return ValidationOutcome(
+            validator=self.name,
+            result=ValidationResult.PASS,
+            detail_codes=("stand_in_judge",),
+        )
