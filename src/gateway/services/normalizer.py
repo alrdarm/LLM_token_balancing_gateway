@@ -5,7 +5,8 @@ downstream reads the canonical form, which is what keeps two API shapes from
 leaking into routing, budgets, and validation.
 
 Token estimation is deliberately crude and clearly labelled: it exists to seed
-budget reservation, and M4 replaces it with a real tokenizer per model family.
+budget reservation. A real tokenizer per model family is still outstanding
+(see DECISION_LOG.md R5).
 Over-estimating is the safe direction -- it reserves more than needed and
 releases the difference.
 """
