@@ -12,12 +12,12 @@ The normative contract is
 
 ## Status
 
-**M0–M3 merged. M4 (budgets/providers) — provisional.** Atomic budget reservation, four provider
-adapters, retry policy, and circuit breaking, on top of M3's routing.
+**M0–M4 merged. M5 (orchestration) — provisional.** The request lifecycle state machine,
+deterministic validators, repair and escalation, idempotency, and `dry_run`.
 
-Generation endpoints still return **503 `no_provider_available`**: budgets can be reserved and
-adapters can be invoked, but nothing drives them until M5's orchestrator. Orchestration (M5),
-streaming (M6), and hardening (M7) are still to come.
+**Requests now run end to end**: both generation endpoints classify, route, reserve budget,
+invoke the deterministic fake provider, validate, and serialize. Streaming (M6) and hardening
+(M7) remain.
 
 ## Setup
 

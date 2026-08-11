@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0–M3 approved and merged.** **M4 (budgets/providers) complete pending approval.** Atomic budget reservation, four provider adapters (deterministic fake, alien fake, OpenAI-compatible HTTP, CommandCode CLI), retry policy, and circuit breaking.
+**M0–M4 approved and merged.** **M5 (orchestration) complete pending approval.** The §7 state machine, deterministic validators, repair and escalation, idempotency, and `dry_run` — wired into both generation endpoints.
 
-Not built yet: orchestration (M5), streaming (M6), hardening (M7). **Generation endpoints still return `503 no_provider_available`** — the pieces exist but nothing drives them until M5's state machine.
+**Requests now run end to end** against the deterministic fake provider. Not built yet: streaming (M6) and hardening (M7).
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -183,6 +183,16 @@ Extend these rather than reinventing them.
 - **CLI adapter security is non-negotiable (§11):** argument arrays with no shell, prompt over stdin (never argv — the process table is world-readable), allowlisted child environment, bounded output, and SIGTERM→SIGKILL to the whole *process group* so grandchildren die too.
 - **Outbound HTTP is allowlisted** and plaintext is permitted only for localhost, so a misconfigured base URL fails closed instead of shipping prompts to an unexpected host.
 - **Full jitter on retries**, because 429s are correlated across callers and identical backoff resynchronises them into the herd the backoff exists to prevent.
+
+## Conventions established in M5
+
+- **Every terminal path funnels through `Orchestrator._terminal`.** That is what makes "each exit persists a terminal reason" (§7) enforceable rather than trusted at a dozen return statements. The orchestrator **never raises** for a terminal state — it returns an outcome and `api/serializers.error_for` maps state onto the §9 error.
+- **The plan is built once and frozen.** Escalation walks the frozen candidate list; do not re-plan mid-request, or inspect and execute stop agreeing (§12 T08).
+- **Reservations resolve in a `finally`.** A crash mid-attempt must not leave money held. Failure before output releases; failure *after* visible output settles, because those tokens are billed regardless.
+- **Validator availability comes from the registry**, never a hardcoded list — otherwise §10's gate passes against a fiction and the shortfall surfaces after the provider has been paid.
+- **Idempotency claims rely on the unique constraint**, not a read-then-check: two concurrent callers race, one wins the insert, the loser is told the request is in progress.
+- **The request row is written before the idempotency claim** (FK ordering), in the same uncommitted transaction, so a conflict rolls both back.
+- **Judges are stand-ins.** `independent_review`/`rubric_judge` pass any non-empty output and say so. Replacing them must change only what they return, not the orchestrator.
 
 ## Control precedence
 
