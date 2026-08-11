@@ -198,8 +198,7 @@ def test_string_max_cost_is_accepted(api_client):
     response = api_client.post(
         CHAT_PATH, json={**MINIMAL_CHAT, "gateway": {"max_cost": "0.050000000"}}
     )
-    # Accepted through validation; stops at the missing provider, not the control.
-    assert response.status_code == 503
+    assert response.status_code == 200
 
 
 def test_contradictory_provider_lists_are_rejected(api_client):
@@ -237,7 +236,9 @@ def test_debug_allowed_with_scope(api_app):
             json={**MINIMAL_CHAT, "gateway": {"debug": True}},
             headers={"Authorization": f"Bearer {TEST_DEBUG_API_KEY}"},
         )
-    assert response.status_code == 503
+    assert response.status_code == 200
+    # §1: route and cost detail only for an authorized caller.
+    assert response.json()["gateway"]["resolved_model"]
 
 
 def test_malformed_control_header_is_400(api_client):
@@ -257,20 +258,20 @@ def test_unknown_explicit_model_is_404(api_client):
 
 def test_known_model_passes_the_lookup(api_client):
     response = api_client.post(CHAT_PATH, json={**MINIMAL_CHAT, "model": "fake/general"})
-    assert response.status_code == 503
+    assert response.status_code == 200
 
 
 @pytest.mark.parametrize(
     "path,body", [(CHAT_PATH, MINIMAL_CHAT), (RESPONSES_PATH, MINIMAL_RESPONSES)]
 )
-def test_valid_request_reaches_the_missing_provider(api_client, path, body):
-    """M2 has no adapters: the pipeline completes and reports it honestly."""
+def test_valid_request_generates_a_response(api_client, path, body):
+    """Since M5 the pipeline runs end to end against the deterministic fake."""
     response = api_client.post(path, json=body)
-    assert response.status_code == 503
+    assert response.status_code == 200
+
     payload = response.json()
-    assert payload["error"]["code"] == "no_provider_available"
-    assert payload["gateway"]["retryable"] is True
-    assert envelope_is_wellformed(payload)
+    assert payload["gateway"]["request_id"]
+    assert payload["usage"]["total_tokens"] > 0
 
 
 def test_responses_rejects_background_mode(api_client):
@@ -284,7 +285,7 @@ def test_responses_rejects_background_mode(api_client):
 @pytest.mark.parametrize(
     ("path", "body", "expected"),
     [
-        (CHAT_PATH, MINIMAL_CHAT, 503),
+        (CHAT_PATH, MINIMAL_CHAT, 200),
         (CHAT_PATH, {"model": "auto"}, 400),
         ("/v1/models", None, 200),
     ],

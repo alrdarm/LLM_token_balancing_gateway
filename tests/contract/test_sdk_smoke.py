@@ -72,41 +72,40 @@ def test_sdk_retrieves_nothing_it_was_not_given(sdk: OpenAI):
     assert excinfo.value.status_code == 404
 
 
-def test_sdk_chat_completion_reaches_the_gateway(sdk: OpenAI):
-    """The SDK's request shape is accepted and normalized.
+def test_sdk_chat_completion_round_trips(sdk: OpenAI):
+    """An unmodified SDK call generates and parses a real completion.
 
-    M2 has no provider, so the call ends in 503. What matters here is that it
-    got that far through the SDK's own serialisation, and that the SDK could
-    parse our error envelope.
+    This is the compatibility claim in one test: the SDK serialises the
+    request, the gateway routes and validates it, and the SDK parses the
+    response into its own typed objects.
     """
-    with pytest.raises(APIStatusError) as excinfo:
-        sdk.chat.completions.create(
-            model="auto",
-            messages=[
-                {"role": "system", "content": "Be brief."},
-                {"role": "user", "content": "Return JSON with a title."},
-            ],
-            max_tokens=300,
-            temperature=0.2,
-        )
+    completion = sdk.chat.completions.create(
+        model="auto",
+        messages=[
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Return a short summary."},
+        ],
+        max_tokens=300,
+        temperature=0.2,
+    )
 
-    error = excinfo.value
-    assert error.status_code == 503
-    # The SDK parsed our envelope rather than treating it as opaque text.
-    assert error.body["code"] == "no_provider_available"
-    assert "adapter" in error.message
+    assert completion.object == "chat.completion"
+    assert completion.choices[0].message.role == "assistant"
+    assert completion.choices[0].message.content
+    assert completion.usage is not None
+    assert completion.usage.total_tokens > 0
 
 
-def test_sdk_responses_endpoint_reaches_the_gateway(sdk: OpenAI):
-    with pytest.raises(APIStatusError) as excinfo:
-        sdk.responses.create(
-            model="auto-quality",
-            instructions="Be concise.",
-            input="Review this SQL.",
-            max_output_tokens=1200,
-        )
-    assert excinfo.value.status_code == 503
-    assert excinfo.value.body["code"] == "no_provider_available"
+def test_sdk_responses_endpoint_round_trips(sdk: OpenAI):
+    response = sdk.responses.create(
+        model="auto",
+        instructions="Be concise.",
+        input="Summarise the report.",
+        max_output_tokens=1200,
+    )
+
+    assert response.output_text
+    assert response.usage is not None
 
 
 def test_sdk_maps_authentication_failure(api_app):
@@ -133,20 +132,19 @@ def test_sdk_passes_gateway_controls_through_extra_body(sdk: OpenAI):
     Proves the control block survives the SDK's serialisation intact -- if it
     did not, the request would fail as an unknown-field error instead of 503.
     """
-    with pytest.raises(APIStatusError) as excinfo:
-        sdk.chat.completions.create(
-            model="auto",
-            messages=[{"role": "user", "content": "hi"}],
-            extra_body={
-                "gateway": {
-                    "quality": "high",
-                    "privacy": "confidential",
-                    "max_cost": "0.050000000",
-                    "max_latency_ms": 12000,
-                }
-            },
-        )
-    assert excinfo.value.status_code == 503
+    completion = sdk.chat.completions.create(
+        model="auto",
+        messages=[{"role": "user", "content": "Summarise this."}],
+        extra_body={
+            "gateway": {
+                "quality": "high",
+                "privacy": "confidential",
+                "max_cost": "0.050000000",
+                "max_latency_ms": 12000,
+            }
+        },
+    )
+    assert completion.choices[0].message.content
 
 
 def test_sdk_rejects_a_bad_gateway_control(sdk: OpenAI):
@@ -173,6 +171,7 @@ def test_sdk_control_headers_are_honoured(sdk: OpenAI):
 
 def test_sdk_receives_the_request_id_header(sdk: OpenAI):
     """SDK users correlate support requests by this header."""
-    with pytest.raises(APIStatusError) as excinfo:
-        sdk.chat.completions.create(model="auto", messages=[{"role": "user", "content": "hi"}])
-    assert excinfo.value.response.headers["x-llm-request-id"]
+    raw = sdk.chat.completions.with_raw_response.create(
+        model="auto", messages=[{"role": "user", "content": "Summarise this."}]
+    )
+    assert raw.headers["x-llm-request-id"]

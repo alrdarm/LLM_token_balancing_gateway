@@ -150,7 +150,7 @@ resulting tree was verified byte-identical with all tests passing.
 
 ---
 
-## M4 — Budgets and Providers ⏳ provisional — PR #6 **open, awaiting approval**
+## M4 — Budgets and Providers ✅ approved, merged (PR #6, `3b8ee1a`)
 
 **Exit gate:** *Concurrency/failure suite.* — verified in CI
 ([run 31418776327](https://github.com/alrdarm/LLM_token_balancing_gateway/actions/runs/31418776327),
@@ -175,12 +175,42 @@ dropping one update. SQLite's whole-database write lock hid it completely. It su
 exactly one failing test on the Postgres half — the case for the both-backends matrix in a
 single data point.
 
-### Open question for M5
+---
 
-⏳ **Should the orchestrator reuse the frozen `RoutePlan`, or re-plan on each escalation
-step?** Recommendation: reuse the plan built once by `services/planning.build_plan`, which
-is what makes §12's T08 (inspect-then-execute parity) hold. Changes how `RoutePlan` is
-threaded through the state machine.
+## M5 — Orchestration ⏳ provisional — PR open, awaiting approval
+
+**Exit gate:** *Non-stream E2E suite.* — 53 E2E tests covering §12 scenarios.
+
+### Decisions approved
+
+| # | Decision | Rationale |
+|---|---|---|
+| D5.1 | **The orchestrator reuses the frozen `RoutePlan`** rather than re-planning per escalation step | Recommended and accepted. Escalation walks the frozen candidate list, which is what makes §12 T08 inspect/execute parity hold; re-planning would let a registry change move the route out from under a caller who had just inspected it. |
+| D5.2 | **The orchestrator never raises for a terminal state** — it returns an outcome, and the API maps state onto its §9 error | Keeps the state machine free of transport concerns and funnels every exit through one place, so "each terminal path persists a reason" is enforced rather than trusted. |
+| D5.3 | **Validator availability is read from the real registry**, not a hardcoded list | See defect below. |
+| D5.4 | **Idempotent replay returns 409 naming the original request**, rather than reconstructing a body | §6 stores a response *reference*, not a body, and v0.1 retains no responses. The provider is not called again, which is what T06 protects. Fabricating a reply would be dishonest. |
+| D5.5 | **`independent_review` and `rubric_judge` ship as an explicit stand-in** | A real judge is a billable provider call recorded as its own attempt (§6 `validator_attempt_id`). The build order says finish orchestration against fake validators first. The stand-in never claims to have assessed quality. |
+| D5.6 | **`dry_run` reuses the inspection serializer** | A dry run and `/route/inspect` cannot then describe the same request differently. Closes R3. |
+
+### Defects found by tests
+
+1. **Planning checked validator availability against a fiction.** A hardcoded list, not the
+   registry, so §10 step 5 admitted routes whose validators did not exist — and the shortfall
+   surfaced only *after* the provider had been paid.
+2. **Idempotency record was written before its request row**, violating the foreign key. Fixed
+   by persisting the request first, inside the same uncommitted transaction so a conflict
+   leaves nothing behind.
+
+### Test premises that were wrong (not bugs)
+
+Recorded because both look like failures and are not:
+
+- A **released** attempt costs nothing, so it correctly does not count against the request
+  ceiling. The mid-request ceiling test had to be rebuilt around attempts that actually settle.
+- A ceiling low enough to matter **narrows eligibility at planning time**, so whether the
+  ceiling or the attempt cap stops a run first depends on the candidate set. §8 treats both as
+  legitimate stops, so the test asserts the invariant (spend never crosses the ceiling) rather
+  than pinning one stop rule.
 
 ---
 
@@ -192,10 +222,12 @@ Consolidated, actionable, oldest first.
 |---|---|---|---|
 | R1 | **Move the virtualenv outside iCloud.** iCloud re-applies macOS `UF_HIDDEN` to `__editable__*.pth`; CPython ≥3.12 skips hidden `.pth`, so `pip install -e` silently no-ops and recurs after every sync. `PYTHONPATH=src` is the reliable workaround; CI is unaffected. | M1 | ⚠️ Open — owner action |
 | R2 | **Commit a text extraction of the spec PDF** alongside the binary, so spec revisions are reviewable. Suggested at v0.2 rather than retroactively. | Pre-M0 | ⚠️ Open |
-| R3 | **`dry_run` is parsed and resolved but never acted on.** §2 requires the generation endpoint to behave as inspection. Was stated as M3 work in the M2 PR; not delivered. | M2 | ⚠️ Open — natural fit for M5 |
+| R3 | ~~**`dry_run` is parsed and resolved but never acted on.**~~ | M2 | ✅ **Closed in M5** — reuses the inspection serializer |
 | R4 | **Gemini HTTP and Anthropic HTTP adapters** — §14 requires all four adapter paths before v0.1 release. | M4 | ⚠️ Open — needs a milestone |
 | R5 | **Real tokenizer per model family.** Estimation is still `chars // 4`. Over-estimating is the safe direction (reserves more, releases the remainder), but it inflates reservations. | M2 | ⚠️ Open |
 | R6 | **Reconcile the placeholder 404 code `not_found`** for unknown *routes* with §9, which defines no code for that case. | M0 | ⚠️ Open |
+| R11 | **The LLM judge is a stand-in.** `independent_review` and `rubric_judge` pass any non-empty output. A real judge is a billable provider call recorded as its own attempt, and §14 expects escalation ladders to be real before release. | M5 | ⚠️ Open — needs a milestone |
+| R12 | **Cancellation on client disconnect is not implemented.** §4 requires disconnect to cancel the adapter, settle known usage, and release the unused reservation. Deadline expiry *is* handled. | M5 | ⚠️ Open — fits M6 with streaming |
 | R7 | **`settle_partial` is currently an alias for `settle`.** Correct today; M6's streaming path is where partial billing actually matters and it may need to diverge. | M4 | 🔵 Revisit in M6 |
 | R8 | **Circuit breaker state is in-process.** Correct for the single-process v0.1 the spec scopes; will not coordinate across replicas. | M4 | 🔵 Accepted for v0.1 |
 | R9 | **Relative score normalisation makes scores set-dependent** — a model's score depends on which others are eligible. Correct for ranking; scores are *not* comparable across requests. Relevant before anyone builds dashboards on them. | M3 | 🔵 Accepted, documented |
@@ -210,15 +242,15 @@ Tracked against §14 acceptance criteria, so nothing quietly slips.
 | Obligation | §14 clause | Status |
 |---|---|---|
 | Four adapter paths (Gemini, CommandCode CLI, OpenAI-compatible, Anthropic) | Functional | 2 of 4 — see R4 |
-| Both generation endpoints work with `model=auto` for standard clients | Functional | Blocked on M5 orchestration |
-| Structured JSON, tools passthrough, idempotency, retry/fallback, repair/escalation, cancellation, streaming | Functional | M5–M6 |
-| ≥10 task classes with policy fixtures, validation requirements, **escalation ladders** | Functional | Fixtures ✅ (14); escalation ladders pending M5 |
-| Tests prove privacy-ineligible providers are never invoked | Safety | Gate proven at routing (T01); end-to-end proof pending M5 |
+| Both generation endpoints work with `model=auto` for standard clients | Functional | ✅ M5 |
+| Structured JSON, tools passthrough, idempotency, retry/fallback, repair/escalation, cancellation, streaming | Functional | ✅ except cancellation-on-disconnect (R12) and streaming (M6) |
+| ≥10 task classes with policy fixtures, validation requirements, **escalation ladders** | Functional | Fixtures ✅ (14); ladders run, but judges are stand-ins (R11) |
+| Tests prove privacy-ineligible providers are never invoked | Safety | ✅ Routing gate (T01); end-to-end orchestration proven |
 | Concurrent tests prove budgets cannot be oversubscribed on either backend | Safety | ✅ M4 |
-| Every terminal path settles or releases its reservation | Safety | Primitives ✅ M4; end-to-end pending M5 |
+| Every terminal path settles or releases its reservation | Safety | ✅ M5 — asserted end to end |
 | Raw content and credentials absent from DB, logs, traces, errors | Safety | Enforced throughout; redaction snapshot tests pending M7 |
 | OpenAPI document, sample environment, architecture/state docs, runbook, acceptance report | Final artifacts | OpenAPI ✅ served; rest pending M7 |
 
 ---
 
-*Last updated: end of M4 (provisional). Next update: end of M5.*
+*Last updated: end of M5 (provisional). Next update: end of M6.*

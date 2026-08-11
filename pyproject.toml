@@ -86,4 +86,5 @@ asyncio_mode = "auto"
 markers = [
     "integration: exercises real I/O such as a database (deselect with -m 'not integration')",
     "contract: pins public wire behaviour, including real-SDK compatibility",
+    "e2e: drives a request through the whole orchestration path",
 ]

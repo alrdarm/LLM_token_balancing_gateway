@@ -154,8 +154,13 @@ class ProviderAdapter(Protocol):
         """
         ...
 
-    async def stream(self, invocation: ProviderInvocation) -> AsyncIterator[StreamChunk]:
-        """Run one streaming generation."""
+    def stream(self, invocation: ProviderInvocation) -> AsyncIterator[StreamChunk]:
+        """Run one streaming generation.
+
+        Declared without ``async`` deliberately: an async *generator* function
+        returns its iterator directly, whereas ``async def` here would type as a
+        coroutine that must first be awaited to obtain one.
+        """
         ...
 
 

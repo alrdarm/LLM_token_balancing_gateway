@@ -23,23 +23,19 @@ from gateway.services import registry as registry_service
 from gateway.services import router
 from gateway.services.classifier import classify, quality_floor_for
 
-#: Validators available in v0.1. M5 registers real implementations; a required
-#: validator missing from this set excludes every model, because the request's
-#: gates could not be enforced (§10 step 5).
-AVAILABLE_VALIDATORS: frozenset[str] = frozenset(
-    {
-        "schema_check",
-        "json_parse",
-        "sql_parser",
-        "sql_safety",
-        "code_compile",
-        "citation_check",
-        "independent_review",
-        "rubric_judge",
-        "length_check",
-        "label_check",
-    }
-)
+
+def available_validators() -> frozenset[str]:
+    """Validators this deployment can actually run.
+
+    Read from the real registry rather than a hardcoded list. §10 step 5
+    excludes every model when a required gate is unavailable, and a hardcoded
+    set would let that gate pass against a fiction -- planning would admit a
+    route whose validators do not exist, and the failure would surface only
+    after the provider had already been paid.
+    """
+    from gateway.validators.deterministic import default_registry
+
+    return default_registry().names()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +121,7 @@ def build_plan(
         features,
         snapshot,
         quality_floor=quality_floor,
-        available_validators=AVAILABLE_VALIDATORS,
+        available_validators=available_validators(),
         required_validators=frozenset(validation_plan),
     )
 

@@ -31,7 +31,12 @@ from gateway.domain.errors import GatewayError
 from gateway.persistence.engine import create_db_engine, create_session_factory
 from gateway.persistence.migrations_config import alembic_config
 from gateway.persistence.readiness import register_persistence_probes
+from gateway.providers.base import AdapterRegistry
+from gateway.providers.fake import FakeProvider
+from gateway.services.orchestrator import Orchestrator
+from gateway.services.resilience import CircuitBreaker
 from gateway.telemetry.logging import configure_logging
+from gateway.validators.deterministic import default_registry
 
 
 @asynccontextmanager
@@ -48,7 +53,24 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = create_db_engine(settings.database_url, echo=settings.database_echo)
 
     app.state.engine = engine
-    app.state.session_factory = create_session_factory(engine)
+    session_factory = create_session_factory(engine)
+    app.state.session_factory = session_factory
+
+    # Adapters are wired here rather than at import time so a deployment can
+    # register a different set without touching the app factory. v0.1 ships the
+    # deterministic fake; real adapters are configured per deployment.
+    adapters = AdapterRegistry()
+    adapters.register(FakeProvider())
+
+    app.state.adapters = adapters
+    app.state.breaker = CircuitBreaker()
+    app.state.orchestrator = Orchestrator(
+        session_factory=session_factory,
+        adapters=adapters,
+        validators=default_registry(),
+        breaker=app.state.breaker,
+        hash_key=settings.hash_key,
+    )
 
     register_persistence_probes(health.readiness.register, engine, alembic_config())
 
