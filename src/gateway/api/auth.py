@@ -91,8 +91,12 @@ def authenticate(
         logger.warning("Authentication failed", extra={"event": "auth_expired"})
         raise InvalidAPIKeyError("Invalid API key.")
 
-    record.last_used_at = now
-
+    # Authentication is deliberately a *pure read*. Stamping ``last_used_at``
+    # here turned every authenticated request -- including read-only ones like
+    # /route/inspect -- into a write against a single shared row. On SQLite
+    # that serialises all traffic behind one write lock and fails under
+    # concurrency; on PostgreSQL it makes that row a contention point. The
+    # column is maintained out of band instead (see DECISION_LOG R13).
     return AuthenticatedClient(
         client_id=record.client_id,
         scopes=frozenset(record.scopes or ()),

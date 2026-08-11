@@ -12,11 +12,11 @@ The normative contract is
 
 ## Status
 
-**M0–M5 merged. M6 (streaming) — provisional.** Both SSE protocols, the first-token boundary,
-buffer-or-reject validation policy, and cancellation on client disconnect.
+**M0–M6 merged. M7 (hardening) — provisional.** All eight milestones are implemented.
 
-Requests run end to end, streamed or complete. Only hardening (M7) remains: redaction
-snapshots, observability, the reconciler, load and security checks, and the runbook.
+**4 of 22 §14 acceptance criteria are not met**, all tracing to deferred feature work: the
+Gemini and Anthropic adapters, and real LLM judges. See [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)
+for the scored checklist and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for operations.
 
 ## Setup
 

@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from gateway.telemetry.context import get_request_id
+from gateway.telemetry.redaction import redact, redact_text
 
 # Operational fields a call site may attach via ``logger.info(..., extra=...)``.
 # Anything outside this set is dropped by the formatter.
@@ -38,7 +39,10 @@ class JsonFormatter(logging.Formatter):
             "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            # Redacted even though messages are meant to be static: a format
+            # argument can carry anything, and §11 requires secrets out of logs
+            # regardless of how they got there.
+            "message": redact_text(record.getMessage()),
         }
 
         request_id = get_request_id()
@@ -48,7 +52,10 @@ class JsonFormatter(logging.Formatter):
         for field in ALLOWED_EXTRA_FIELDS:
             value = getattr(record, field, None)
             if value is not None:
-                payload[field] = value
+                # Belt and braces: the allowlist should already exclude
+                # anything content-bearing, but a value can still contain a
+                # credential pasted into an operational field.
+                payload[field] = redact(value, key=field)
 
         if record.exc_info:
             # Type and message only. Tracebacks can embed request content and
@@ -56,7 +63,10 @@ class JsonFormatter(logging.Formatter):
             exc_type, exc_value, _ = record.exc_info
             if exc_type is not None:
                 payload["exception_type"] = exc_type.__name__
-                payload["exception_message"] = str(exc_value)
+                # An exception's str routinely contains the offending value --
+                # a failed statement, a rejected payload, a URL with a key in
+                # the query string -- so it is redacted, never logged raw.
+                payload["exception_message"] = redact_text(str(exc_value))
 
         return json.dumps(payload, separators=(",", ":"), default=str)
 

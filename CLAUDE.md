@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-**M0–M5 approved and merged.** **M6 (streaming) complete pending approval.** Both SSE protocols, the first-token boundary, buffer-or-reject validation policy, and cancellation on disconnect.
+**M0–M6 approved and merged.** **M7 (hardening) complete pending approval — the final milestone.** Redaction, metrics, the reconciler, security and performance suites, `docs/RUNBOOK.md`, and `docs/ACCEPTANCE.md`.
 
-Only M7 (hardening) remains: redaction snapshots, observability, the reconciler, load and security checks, and the runbook.
+**4 of 22 §14 acceptance criteria are not met**, all tracing to deferred feature work: two provider adapters (R4) and real LLM judges (R11). See `docs/ACCEPTANCE.md`.
 
 Development is gated milestone by milestone (M0–M7, §13 of the spec). Do not start the next milestone until the previous one is explicitly approved.
 
@@ -202,6 +202,15 @@ Extend these rather than reinventing them.
 - **A stream produces at most one attempt.** §4 forbids switching models past the first token, so there is no fallback or escalation path to write.
 - **Disconnect settles what was emitted and releases the rest**, then re-raises so cancellation still propagates. `CancelledError`/`GeneratorExit` are caught only to resolve the reservation.
 - **Frames split payload newlines across `data:` lines.** A raw newline terminates an SSE frame early and corrupts everything after it.
+
+## Conventions established in M7
+
+- **Authentication is a pure read.** Never write on the auth path. Stamping `last_used_at` per request made every authenticated call — including read-only ones — contend on one row; on SQLite that serialised the whole gateway.
+- **Redaction is key-based *and* pattern-based**, because each misses what the other catches. Keys are separator-normalised, so `X-Api-Key` and `api_key` are the same field. Redaction functions never raise — throwing inside an error handler would surface the data they exist to hide.
+- **Header redaction applies only the secret rule.** `Content-Type` contains "content" but is transport metadata; redacting it strips the most useful log field and protects nothing.
+- **The reconciler never re-invokes and imports no provider.** An ambiguous reservation settles rather than releases: under-counting spend lets the next request overspend a depleted budget.
+- **Metrics carry no high-cardinality labels.** Values come from closed vocabularies; anything unrecognised folds into `other`.
+- **Performance tests are budgets, not benchmarks** — loose enough to fail only on a regression of kind, because a flaky perf test gets muted and a muted test protects nothing.
 
 ## Control precedence
 

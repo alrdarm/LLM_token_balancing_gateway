@@ -214,7 +214,7 @@ Recorded because both look like failures and are not:
 
 ---
 
-## M6 — Streaming ⏳ provisional — PR open, awaiting approval
+## M6 — Streaming ✅ approved, merged (PR #8, `4930269`)
 
 **Exit gate:** *Streaming failure/disconnect suite.* — 25 tests.
 
@@ -228,6 +228,35 @@ Recorded because both look like failures and are not:
 | D6.4 | **A streaming request produces at most one attempt** | §4 forbids switching models past the first visible token, so there is no fallback or escalation to make. |
 | D6.5 | **Mid-stream failures are reported in-band**, not as a status | The status was committed with the headers; an error frame is the only channel left. |
 | D6.6 | **`StreamingOrchestrator` is a subclass, not a flag** | The control flow genuinely differs at the first-token boundary; a boolean would hide two different state machines in one function. |
+
+---
+
+## M7 — Hardening ⏳ provisional — PR open, awaiting approval
+
+**Exit gate:** *Acceptance checklist.* — `docs/ACCEPTANCE.md`, scored honestly.
+
+### Decisions approved
+
+| # | Decision | Rationale |
+|---|---|---|
+| D7.1 | **M7 scoped as option (a)**: finish hardening, produce an acceptance report honest about unmet criteria, rather than expanding scope or descoping §14 | Recommended and accepted. Keeps hardening clean and puts the R4/R11 decision in front of the owner with evidence. |
+| D7.2 | **Authentication is a pure read** | See defect below. |
+| D7.3 | **Redaction combines key matching and pattern matching** | Each misses what the other catches: a field named `api_key` is redacted whatever it holds; a value shaped like a credential is redacted whatever it is called. |
+| D7.4 | **Header redaction applies only the secret rule**, not the content rule | Redacting `Content-Type` because it contains "content" would strip the most useful field from every request log while protecting nothing. |
+| D7.5 | **The reconciler settles ambiguous reservations rather than releasing them** | Whether the provider was called is unknowable and §11 forbids finding out by retrying. Under-counting spend lets the next request overspend a depleted budget; over-counting merely denies one. |
+| D7.6 | **Performance tests are budgets, not benchmarks** | Thresholds an order of magnitude above observed timings, so they fail on a regression *of kind* rather than on a slow runner. A tight threshold produces flaky failures that get muted, and a muted test protects nothing. |
+
+### Defect found by the performance budget
+
+**`authenticate()` wrote `last_used_at` on every authenticated request**, turning
+every call — including read-only `/route/inspect` — into a write against a single shared row.
+On SQLite this serialised all traffic behind one write lock: 20 concurrent inspections took
+**91 seconds with 17 of 20 returning 500** (`database is locked`). On PostgreSQL it would have
+been a permanent hot row rather than an outage — worse, in that nobody would have noticed.
+
+Authentication is now a pure read. The same workload completes in **0.02 seconds, 6 of 6
+succeeding**. This is the clearest case in the project of a test catching something no amount
+of review would have: the code looked entirely reasonable.
 
 ---
 
@@ -245,6 +274,8 @@ Consolidated, actionable, oldest first.
 | R6 | **Reconcile the placeholder 404 code `not_found`** for unknown *routes* with §9, which defines no code for that case. | M0 | ⚠️ Open |
 | R11 | **The LLM judge is a stand-in.** `independent_review` and `rubric_judge` pass any non-empty output. A real judge is a billable provider call recorded as its own attempt, and §14 expects escalation ladders to be real before release. | M5 | ⚠️ Open — needs a milestone |
 | R12 | ~~**Cancellation on client disconnect is not implemented.**~~ | M5 | ✅ **Closed in M6** — cancellation settles emitted usage and releases the rest |
+| R13 | **`api_keys.last_used_at` is no longer populated.** Removed from the authentication path because writing it per request serialised the gateway. Populating it needs an out-of-band, throttled path. | M7 | ⚠️ Open — low priority |
+| R14 | **Quota staleness is untested because nothing writes `quota_snapshots`.** §10 gate 7 and §11's staleness metric are implemented but unexercised. | M7 | ⚠️ Open |
 | R7 | **`settle_partial` is currently an alias for `settle`.** Correct today; M6's streaming path is where partial billing actually matters and it may need to diverge. | M4 | 🔵 Revisit in M6 |
 | R8 | **Circuit breaker state is in-process.** Correct for the single-process v0.1 the spec scopes; will not coordinate across replicas. | M4 | 🔵 Accepted for v0.1 |
 | R9 | **Relative score normalisation makes scores set-dependent** — a model's score depends on which others are eligible. Correct for ranking; scores are *not* comparable across requests. Relevant before anyone builds dashboards on them. | M3 | 🔵 Accepted, documented |
@@ -270,4 +301,4 @@ Tracked against §14 acceptance criteria, so nothing quietly slips.
 
 ---
 
-*Last updated: end of M6 (provisional). Next update: end of M7.*
+*Last updated: end of M7 (provisional) — the final milestone. See `docs/ACCEPTANCE.md`.*
