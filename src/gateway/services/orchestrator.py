@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -41,6 +41,7 @@ from gateway.domain.errors import (
     BudgetExceededError,
     GatewayError,
     NoProviderAvailableError,
+    ProviderError,
 )
 from gateway.domain.requests import CanonicalRequest
 from gateway.domain.routing import Candidate, RoutePlan
@@ -51,6 +52,7 @@ from gateway.providers.base import (
     ProviderFailure,
     ProviderInvocation,
     ProviderResult,
+    ProviderUsage,
 )
 from gateway.services import budget as budget_service
 from gateway.services.planning import PlanningResult
@@ -585,3 +587,278 @@ def no_adapter_error() -> GatewayError:
     return NoProviderAvailableError(
         "No provider adapter is currently available to serve this request."
     )
+
+
+@dataclass(slots=True)
+class StreamEvent:
+    """One step of a streamed run, as the API layer sees it."""
+
+    delta: str = ""
+    #: Set once the run reaches a terminal state.
+    outcome: OrchestrationResult | None = None
+    #: Set when the run failed after output was already visible (§4).
+    failure: GatewayError | None = None
+
+
+class StreamingOrchestrator(Orchestrator):
+    """Adds the streaming path to the state machine (§4).
+
+    Kept as a subclass rather than a flag on :class:`Orchestrator` because the
+    control flow genuinely differs: a streamed attempt must decide, at the
+    first visible token, that the route is now fixed -- and everything after
+    that point stops being retryable.
+    """
+
+    async def run_stream(
+        self,
+        request: CanonicalRequest,
+        planning: PlanningResult,
+        *,
+        scopes: list[str],
+        deadline_at: datetime,
+        buffered: bool,
+    ) -> AsyncIterator[StreamEvent]:
+        """Yield deltas, then one terminal event.
+
+        ``buffered`` replays a fully-generated, fully-validated response as a
+        stream. That is not a lie to the client: the framing is real SSE, and
+        §4 explicitly permits buffering when validation needs the whole output.
+        """
+        if buffered:
+            outcome = await self.run(request, planning, scopes=scopes, deadline_at=deadline_at)
+            if outcome.succeeded and outcome.result is not None:
+                for piece in _chunk_text(outcome.result.text):
+                    yield StreamEvent(delta=piece)
+            yield StreamEvent(outcome=outcome)
+            return
+
+        async for event in self._passthrough(
+            request, planning, scopes=scopes, deadline_at=deadline_at
+        ):
+            yield event
+
+    async def _passthrough(
+        self,
+        request: CanonicalRequest,
+        planning: PlanningResult,
+        *,
+        scopes: list[str],
+        deadline_at: datetime,
+    ) -> AsyncIterator[StreamEvent]:
+        """Forward provider deltas, fixing the route at the first token."""
+        plan = planning.plan
+        outcome = OrchestrationResult(state=RequestState.READY, terminal_reason="")
+        started = time.monotonic()
+
+        if not plan.has_route:
+            yield StreamEvent(
+                outcome=self._terminal(
+                    outcome, request, RequestState.REJECTED_NO_ROUTE, "no_eligible_route", started
+                )
+            )
+            return
+
+        candidate = plan.candidates[0]
+        adapter = self.adapters.get(candidate.provider)
+        if adapter is None:
+            yield StreamEvent(
+                outcome=self._terminal(
+                    outcome, request, RequestState.FAILED_EXHAUSTED, "no_adapter", started
+                )
+            )
+            return
+
+        attempt_id = self._record_attempt(
+            request,
+            candidate,
+            sequence=1,
+            kind=AttemptKind.GENERATION,
+            estimated=candidate.estimated_cost,
+        )
+
+        # §4: reservation completes before any byte is committed to the client.
+        session = self.session_factory()
+        try:
+            with immediate_transaction(session):
+                reservation = budget_service.reserve(
+                    session,
+                    request_id=request.request_id,
+                    attempt_id=attempt_id,
+                    scopes=scopes,
+                    estimate=candidate.estimated_cost,
+                    request_cost_so_far=Decimal("0"),
+                    effective_max_cost=request.controls.max_cost,
+                )
+        except BudgetExceededError:
+            session.close()
+            self._finish_attempt(
+                attempt_id,
+                outcome=AttemptOutcome.CANCELLED,
+                result=None,
+                actual_cost=Decimal("0"),
+                error_code="budget_exceeded",
+            )
+            yield StreamEvent(
+                outcome=self._terminal(
+                    outcome, request, RequestState.REJECTED_BUDGET, "budget_exceeded", started
+                )
+            )
+            return
+
+        emitted = False
+        text_parts: list[str] = []
+        finish_reason = "stop"
+        settled = Decimal("0")
+        failure: ProviderFailure | None = None
+        cancelled = False
+
+        try:
+            invocation = ProviderInvocation(
+                request=request,
+                provider_model_id=candidate.model_id.split("/", 1)[-1],
+                gateway_model_id=candidate.model_id,
+                max_output_tokens=request.max_output_tokens,
+                timeout_seconds=max((deadline_at - datetime.now(UTC)).total_seconds(), 0.1),
+                estimated_cost=candidate.estimated_cost,
+            )
+
+            async for chunk in adapter.stream(invocation):
+                if chunk.delta:
+                    emitted = True
+                    text_parts.append(chunk.delta)
+                    yield StreamEvent(delta=chunk.delta)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+
+            settled = candidate.estimated_cost
+
+        except ProviderFailure as exc:
+            failure = exc
+            # Anything already emitted was generated and will be billed, so a
+            # partial stream settles rather than releases.
+            settled = candidate.estimated_cost if emitted else Decimal("0")
+        except (GeneratorExit, asyncio.CancelledError):
+            # §4: the client went away. Cancel, settle what was produced, and
+            # release the rest. Re-raised after the finally block resolves the
+            # reservation, so cancellation still propagates.
+            cancelled = True
+            settled = candidate.estimated_cost if emitted else Decimal("0")
+            raise
+        finally:
+            with immediate_transaction(session):
+                if settled > 0:
+                    budget_service.settle(session, reservation, actual_cost=settled)
+                else:
+                    budget_service.release(session, reservation)
+            session.close()
+
+            self._finish_attempt(
+                attempt_id,
+                outcome=(
+                    AttemptOutcome.CANCELLED
+                    if cancelled
+                    else (failure.outcome if failure else AttemptOutcome.SUCCESS)
+                ),
+                result=None,
+                actual_cost=settled,
+                emitted_output=emitted,
+                error_code=(failure.outcome.value if failure else None),
+            )
+            if cancelled:
+                self._terminal(
+                    outcome, request, RequestState.CANCELLED, "client_disconnected", started
+                )
+
+        if failure is not None:
+            if emitted:
+                # §4: terminal. No fallback, no escalation, no second model.
+                yield StreamEvent(
+                    outcome=self._terminal(
+                        outcome, request, RequestState.FAILED_PARTIAL, "partial_output", started
+                    ),
+                    failure=ProviderError(
+                        "The response failed after output had already been sent, so it "
+                        "could not be retried on another model."
+                    ),
+                )
+            else:
+                # Nothing was visible, so an ordinary non-stream retry is legal.
+                self.breaker.record_failure(candidate.provider, failure)
+                yield StreamEvent(
+                    outcome=self._terminal(
+                        outcome, request, RequestState.FAILED_EXHAUSTED, "stream_failed", started
+                    ),
+                    failure=ProviderError("The provider failed before any output was produced."),
+                )
+            return
+
+        # Validate the assembled output. A passthrough stream only reaches here
+        # when no gate needed the whole response, so this is a formality that
+        # still records telemetry.
+        text = "".join(text_parts)
+        result = ProviderResult(
+            text=text,
+            finish_reason=finish_reason,
+            usage=ProviderUsage(
+                prompt_tokens=request.estimated_input_tokens,
+                completion_tokens=max(len(text) // 4, 1),
+            ),
+            model_id=candidate.model_id,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            emitted_output=True,
+        )
+        report = run_plan(
+            self.validators,
+            plan.validation_plan,
+            request,
+            result,
+            ValidationContext(attempt_number=1),
+        )
+        self._persist_validations(request.request_id, attempt_id, report)
+
+        outcome.result = result
+        outcome.validation = report
+        outcome.resolved_model = candidate.model_id
+        outcome.total_cost = settled
+        outcome.attempts.append(
+            AttemptRecord(
+                sequence=1,
+                model_id=candidate.model_id,
+                kind=AttemptKind.GENERATION,
+                outcome=AttemptOutcome.SUCCESS,
+                cost=settled,
+                latency_ms=result.latency_ms,
+                validation=report,
+            )
+        )
+
+        if report.passed:
+            self.breaker.record_success(candidate.provider)
+            yield StreamEvent(
+                outcome=self._terminal(
+                    outcome, request, RequestState.SUCCEEDED, "validated", started
+                )
+            )
+            return
+
+        # Output was already visible, so a failed gate cannot be repaired or
+        # escalated -- §4 forbids switching models past the first token.
+        yield StreamEvent(
+            outcome=self._terminal(
+                outcome,
+                request,
+                RequestState.FAILED_PARTIAL,
+                "validation_failed_after_output",
+                started,
+            ),
+            failure=ProviderError(
+                "The streamed response failed validation after it had already been sent."
+            ),
+        )
+
+
+#: Roughly a word at a time, so a buffered replay still looks like a stream.
+def _chunk_text(text: str, size: int = 24) -> list[str]:
+    if not text:
+        return []
+    return [text[index : index + size] for index in range(0, len(text), size)]

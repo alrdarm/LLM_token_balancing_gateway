@@ -12,12 +12,11 @@ The normative contract is
 
 ## Status
 
-**M0–M4 merged. M5 (orchestration) — provisional.** The request lifecycle state machine,
-deterministic validators, repair and escalation, idempotency, and `dry_run`.
+**M0–M5 merged. M6 (streaming) — provisional.** Both SSE protocols, the first-token boundary,
+buffer-or-reject validation policy, and cancellation on client disconnect.
 
-**Requests now run end to end**: both generation endpoints classify, route, reserve budget,
-invoke the deterministic fake provider, validate, and serialize. Streaming (M6) and hardening
-(M7) remain.
+Requests run end to end, streamed or complete. Only hardening (M7) remains: redaction
+snapshots, observability, the reconciler, load and security checks, and the runbook.
 
 ## Setup
 

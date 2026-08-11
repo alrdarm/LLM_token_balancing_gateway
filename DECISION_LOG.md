@@ -177,7 +177,7 @@ single data point.
 
 ---
 
-## M5 — Orchestration ⏳ provisional — PR open, awaiting approval
+## M5 — Orchestration ✅ approved, merged (PR #7, `49a8d00`)
 
 **Exit gate:** *Non-stream E2E suite.* — 53 E2E tests covering §12 scenarios.
 
@@ -214,6 +214,23 @@ Recorded because both look like failures and are not:
 
 ---
 
+## M6 — Streaming ⏳ provisional — PR open, awaiting approval
+
+**Exit gate:** *Streaming failure/disconnect suite.* — 25 tests.
+
+### Decisions approved
+
+| # | Decision | Rationale |
+|---|---|---|
+| D6.1 | **Buffer *or* reject by policy**, not one behaviour unconditionally | Recommended and accepted. Buffer when validation is cheap and deterministic (costs milliseconds, beats refusing); reject with `validation_requires_buffering` only when a gate needs a judge, where buffering would hold the caller through a full generation *and* a provider round-trip while pretending to stream. |
+| D6.2 | **R12 (cancel on disconnect) folded into M6** | Recommended and accepted — same code path as streaming disconnect. Closes R12. |
+| D6.3 | **High risk buffers even with no full-output validator planned** | §4 names high risk explicitly; a high-risk answer should not reach a client unchecked. |
+| D6.4 | **A streaming request produces at most one attempt** | §4 forbids switching models past the first visible token, so there is no fallback or escalation to make. |
+| D6.5 | **Mid-stream failures are reported in-band**, not as a status | The status was committed with the headers; an error frame is the only channel left. |
+| D6.6 | **`StreamingOrchestrator` is a subclass, not a flag** | The control flow genuinely differs at the first-token boundary; a boolean would hide two different state machines in one function. |
+
+---
+
 ## Outstanding recommendations
 
 Consolidated, actionable, oldest first.
@@ -227,7 +244,7 @@ Consolidated, actionable, oldest first.
 | R5 | **Real tokenizer per model family.** Estimation is still `chars // 4`. Over-estimating is the safe direction (reserves more, releases the remainder), but it inflates reservations. | M2 | ⚠️ Open |
 | R6 | **Reconcile the placeholder 404 code `not_found`** for unknown *routes* with §9, which defines no code for that case. | M0 | ⚠️ Open |
 | R11 | **The LLM judge is a stand-in.** `independent_review` and `rubric_judge` pass any non-empty output. A real judge is a billable provider call recorded as its own attempt, and §14 expects escalation ladders to be real before release. | M5 | ⚠️ Open — needs a milestone |
-| R12 | **Cancellation on client disconnect is not implemented.** §4 requires disconnect to cancel the adapter, settle known usage, and release the unused reservation. Deadline expiry *is* handled. | M5 | ⚠️ Open — fits M6 with streaming |
+| R12 | ~~**Cancellation on client disconnect is not implemented.**~~ | M5 | ✅ **Closed in M6** — cancellation settles emitted usage and releases the rest |
 | R7 | **`settle_partial` is currently an alias for `settle`.** Correct today; M6's streaming path is where partial billing actually matters and it may need to diverge. | M4 | 🔵 Revisit in M6 |
 | R8 | **Circuit breaker state is in-process.** Correct for the single-process v0.1 the spec scopes; will not coordinate across replicas. | M4 | 🔵 Accepted for v0.1 |
 | R9 | **Relative score normalisation makes scores set-dependent** — a model's score depends on which others are eligible. Correct for ranking; scores are *not* comparable across requests. Relevant before anyone builds dashboards on them. | M3 | 🔵 Accepted, documented |
@@ -243,7 +260,7 @@ Tracked against §14 acceptance criteria, so nothing quietly slips.
 |---|---|---|
 | Four adapter paths (Gemini, CommandCode CLI, OpenAI-compatible, Anthropic) | Functional | 2 of 4 — see R4 |
 | Both generation endpoints work with `model=auto` for standard clients | Functional | ✅ M5 |
-| Structured JSON, tools passthrough, idempotency, retry/fallback, repair/escalation, cancellation, streaming | Functional | ✅ except cancellation-on-disconnect (R12) and streaming (M6) |
+| Structured JSON, tools passthrough, idempotency, retry/fallback, repair/escalation, cancellation, streaming | Functional | ✅ M6 |
 | ≥10 task classes with policy fixtures, validation requirements, **escalation ladders** | Functional | Fixtures ✅ (14); ladders run, but judges are stand-ins (R11) |
 | Tests prove privacy-ineligible providers are never invoked | Safety | ✅ Routing gate (T01); end-to-end orchestration proven |
 | Concurrent tests prove budgets cannot be oversubscribed on either backend | Safety | ✅ M4 |
@@ -253,4 +270,4 @@ Tracked against §14 acceptance criteria, so nothing quietly slips.
 
 ---
 
-*Last updated: end of M5 (provisional). Next update: end of M6.*
+*Last updated: end of M6 (provisional). Next update: end of M7.*
