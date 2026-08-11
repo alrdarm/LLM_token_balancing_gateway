@@ -569,6 +569,8 @@ class APIKey(TimestampMixin, Base):
 
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    #: Populated out of band, never on the authentication path: writing here
+    #: per request would make every authenticated call contend on one row.
     last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     __table_args__ = (
